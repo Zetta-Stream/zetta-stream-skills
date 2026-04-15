@@ -66,11 +66,11 @@ export async function probe(): Promise<ProbeResult> {
     // Optimistic path: try signing a dummy authorization. Local-only — no broadcast.
     // If viem can sign it, the SDK path works; X Layer RPC acceptance still
     // depends on the node — verified on first real send.
-    const delegate = cfg.BATCH_CALL_DELEGATE_ADDRESS;
+    const delegate = cfg.ZETTA_STREAM_DELEGATE_ADDRESS;
     if (!delegate) {
       const r: ProbeResult = {
         supports7702: false,
-        reason: "BATCH_CALL_DELEGATE_ADDRESS not set — cannot probe; fallback",
+        reason: "ZETTA_STREAM_DELEGATE_ADDRESS not set — cannot probe; fallback",
         probedAt: Date.now(),
       };
       cached = r;

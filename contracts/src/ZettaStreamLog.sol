@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title  ZettaStreamLog — immutable audit ledger for ZettaStream Agentic Kernel
-/// @author OKX Onchain OS Hackathon submission
-/// @notice Every intent verdict + EIP-7702 delegation write one entry here.
-///         Deployed on X Layer (chainId 196). Anyone reads; only pre-authorized agents write.
+/// @title  ZettaStreamLog — immutable rotation ledger for the Zetta-Stream agent
+/// @notice Deployed on X Layer (chainId 196). Every yield rotation + delegation writes
+///         exactly one record. Anyone reads; only owner-authorized agents write.
 contract ZettaStreamLog {
     // --------------------------- Types ---------------------------
 
-    enum Verdict {
-        PENDING,
-        APPROVED,
-        REJECTED,
-        EXECUTED
+    enum Position {
+        IDLE,
+        AAVE,
+        UNIV4
     }
 
     enum DelegateMode {
@@ -20,16 +18,23 @@ contract ZettaStreamLog {
         MULTICALL_FALLBACK
     }
 
-    struct Entry {
+    /// @notice One record per autonomous rotation decision the agent commits on-chain.
+    /// @dev    `netYieldBps` is signed: positive means the rotation improved net APY in
+    ///         basis points after IL + gas; negative means the agent chose to rebalance
+    ///         out of a losing position and accepted a small drag.
+    struct Rotation {
         uint64 timestamp;
         address owner;
         address agent;
-        bytes32 intentHash;
-        Verdict verdict;
-        uint8 confidence;     // 0-100
-        uint32 gasSaved;      // gwei-scaled saving vs N independent EOA tx baseline
-        bytes32[] txHashes;   // inner call hashes (empty for REJECTED)
-        string reason;        // <=140 bytes
+        bytes32 signalHash;     // keccak256(canonicalJson(YieldSignal))
+        Position from;
+        Position to;
+        uint8 confidence;       // 0-100
+        int32 netYieldBps;      // signed bps after IL + gas
+        uint32 gasSavedBps;     // savings vs N independent EOA tx baseline (bps of notional)
+        bytes32 batchTxHash;    // the EIP-7702 / Multicall batch tx
+        DelegateMode mode;
+        string reason;          // <=140 bytes
     }
 
     struct Delegation {
@@ -44,23 +49,25 @@ contract ZettaStreamLog {
 
     // --------------------------- Storage ------------------------
 
-    Entry[] private _entries;
+    Rotation[] private _rotations;
     Delegation[] private _delegations;
 
-    mapping(address => uint256[]) private _ownerEntries;
+    mapping(address => uint256[]) private _ownerRotations;
     mapping(address => uint256[]) private _ownerDelegations;
-    /// @notice owner -> authorized agent wallet
+    /// @notice owner -> authorized agent wallet (TEE EVM address)
     mapping(address => address) public authorizedAgent;
 
     // --------------------------- Events -------------------------
 
     event AgentAuthorized(address indexed owner, address indexed agent);
     event AgentRevoked(address indexed owner, address indexed previousAgent);
-    event IntentLogged(
+    event RotationLogged(
         uint256 indexed id,
         address indexed owner,
         address indexed agent,
-        Verdict verdict,
+        Position from,
+        Position to,
+        int32 netYieldBps,
         uint8 confidence
     );
     event DelegationLogged(
@@ -104,36 +111,42 @@ contract ZettaStreamLog {
         emit AgentRevoked(msg.sender, prev);
     }
 
-    // --------------------------- Intent log ---------------------
+    // --------------------------- Rotation log ---------------------
 
-    function logIntent(
+    function logRotation(
         address owner,
-        bytes32 intentHash,
-        Verdict verdict,
+        bytes32 signalHash,
+        Position from,
+        Position to,
         uint8 confidence,
-        uint32 gasSaved,
-        bytes32[] calldata txHashes,
+        int32 netYieldBps,
+        uint32 gasSavedBps,
+        bytes32 batchTxHash,
+        DelegateMode mode,
         string calldata reason
     ) external onlyAuthorized(owner) returns (uint256 id) {
         if (confidence > 100) revert InvalidConfidence();
         if (bytes(reason).length > 140) revert ReasonTooLong();
 
-        _entries.push(
-            Entry({
+        _rotations.push(
+            Rotation({
                 timestamp: uint64(block.timestamp),
                 owner: owner,
                 agent: msg.sender,
-                intentHash: intentHash,
-                verdict: verdict,
+                signalHash: signalHash,
+                from: from,
+                to: to,
                 confidence: confidence,
-                gasSaved: gasSaved,
-                txHashes: txHashes,
+                netYieldBps: netYieldBps,
+                gasSavedBps: gasSavedBps,
+                batchTxHash: batchTxHash,
+                mode: mode,
                 reason: reason
             })
         );
-        id = _entries.length - 1;
-        _ownerEntries[owner].push(id);
-        emit IntentLogged(id, owner, msg.sender, verdict, confidence);
+        id = _rotations.length - 1;
+        _ownerRotations[owner].push(id);
+        emit RotationLogged(id, owner, msg.sender, from, to, netYieldBps, confidence);
     }
 
     // --------------------------- Delegation log ------------------
@@ -174,37 +187,37 @@ contract ZettaStreamLog {
 
     // --------------------------- Views --------------------------
 
-    function entryCount() external view returns (uint256) {
-        return _entries.length;
+    function rotationCount() external view returns (uint256) {
+        return _rotations.length;
     }
 
     function delegationCount() external view returns (uint256) {
         return _delegations.length;
     }
 
-    function entry(uint256 id) external view returns (Entry memory) {
-        return _entries[id];
+    function rotation(uint256 id) external view returns (Rotation memory) {
+        return _rotations[id];
     }
 
     function delegation(uint256 id) external view returns (Delegation memory) {
         return _delegations[id];
     }
 
-    function entriesFor(address owner) external view returns (uint256[] memory) {
-        return _ownerEntries[owner];
+    function rotationsFor(address owner) external view returns (uint256[] memory) {
+        return _ownerRotations[owner];
     }
 
     function delegationsFor(address owner) external view returns (uint256[] memory) {
         return _ownerDelegations[owner];
     }
 
-    /// @notice Most-recent `n` entries (newest first), clamped to available count.
-    function recent(uint256 n) external view returns (Entry[] memory out) {
-        uint256 total = _entries.length;
+    /// @notice Most-recent `n` rotations (newest first), clamped to available count.
+    function recent(uint256 n) external view returns (Rotation[] memory out) {
+        uint256 total = _rotations.length;
         uint256 take = n > total ? total : n;
-        out = new Entry[](take);
+        out = new Rotation[](take);
         for (uint256 i = 0; i < take; i++) {
-            out[i] = _entries[total - 1 - i];
+            out[i] = _rotations[total - 1 - i];
         }
     }
 

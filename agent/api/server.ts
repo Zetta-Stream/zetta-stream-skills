@@ -25,6 +25,17 @@ import { intentSchema } from "../firewall/intent-types.js";
 import { emitEvent, recentEvents, subscribe } from "./events.js";
 import { openSession } from "../x402/session-client.js";
 import { chooseRoute } from "../crosschain/router.js";
+import { queryYieldFeed } from "../x402/query.js";
+import { scoreAndGate } from "../decision/rotator.js";
+import { loadState, updateRotation } from "../state.js";
+import { runRotation } from "../monitor/run-rotation.js";
+import {
+  start as startMonitor,
+  stop as stopMonitor,
+  isRunning as monitorIsRunning,
+  getSessionMetrics,
+  currentState as monitorState,
+} from "../monitor/loop.js";
 
 const log = getLogger("api");
 
@@ -35,19 +46,37 @@ export function buildApp() {
     c.json({ ok: true, watchers: listWatchers().length, uptime: process.uptime() }),
   );
 
+  // ---------------- /analyze (Zetta-Stream yield rotation preview) ----------------
+  // Preview what the agent WOULD do right now — no broadcast, no audit, no medal.
+  // This is the surface the `zetta-stream-analyze` skill calls.
   app.post("/analyze", async (c) => {
-    const body = await c.req.json().catch(() => null);
-    if (!body) return c.json({ ok: false, error: "invalid json" }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { owner?: string };
     try {
-      const report = await runFirewall(body);
+      const state = loadState();
+      let signal;
+      try {
+        const quote = await queryYieldFeed();
+        signal = quote.signal;
+      } catch (err) {
+        return c.json({
+          ok: false,
+          error: `no x402 yield feed available — open a session first (zetta-stream-fund target=x402). (${(err as Error).message})`,
+        }, 424);
+      }
+      const outcome = scoreAndGate({
+        signal,
+        currentPosition: state.rotation.position,
+        ring: state.rotation.signalRingBuffer,
+        lastRotatedAtMs: state.rotation.lastRotatedAt,
+      });
+      // Persist the new ring tick so the autonomous loop can benefit from preview queries.
+      updateRotation({ signalRingBuffer: outcome.nextRing });
+      emitEvent({ type: "analyze", owner: body.owner ?? state.ownerAddress, decision: outcome.decision, gate: outcome.gate });
       return c.json({
         ok: true,
-        intentHash: report.intentHash,
-        verdict: report.verdict.verdict,
-        confidence: report.verdict.confidence,
-        reason: report.verdict.reason,
-        findings: report.verdict.findings,
-        plan: { callCount: report.calls.length, labels: report.calls.map((c) => c.label) },
+        signal,
+        decision: outcome.decision,
+        gate: outcome.gate,
       });
     } catch (e) {
       return c.json({ ok: false, error: (e as Error).message }, 400);
@@ -107,6 +136,68 @@ export function buildApp() {
     } catch (e) {
       return c.json({ ok: false, error: (e as Error).message }, 400);
     }
+  });
+
+  // ---------------- /rotate (execute one rotation NOW) ----------------
+  app.post("/rotate", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      owner?: `0x${string}`;
+      force?: boolean;
+      options?: { tag?: string; force_fallback?: boolean; minNetBps?: number };
+    };
+    try {
+      const result = await runRotation({
+        owner: body.owner,
+        force: body.force ?? true,
+        tag: body.options?.tag,
+        minBpsOverride: body.options?.minNetBps,
+      });
+      return c.json({ ok: true, ...result });
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message }, 400);
+    }
+  });
+
+  // ---------------- /monitor/start — autonomous loop ----------------
+  app.post("/monitor/start", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      owner?: `0x${string}`;
+      durationSeconds?: number;
+    };
+    try {
+      const info = startMonitor(body.durationSeconds);
+      const cfg = getConfig();
+      return c.json({
+        ok: true,
+        ...info,
+        tickIntervalMs: cfg.POLL_INTERVAL_MS,
+        sseUrl: `http://localhost:${cfg.AGENT_API_PORT}/sse`,
+      });
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message }, 400);
+    }
+  });
+
+  // ---------------- /monitor/stop — graceful shutdown + summary ----------------
+  app.post("/monitor/stop", async (c) => {
+    try {
+      const metrics = stopMonitor();
+      return c.json({ ok: true, stoppedAt: Date.now(), metrics });
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message }, 400);
+    }
+  });
+
+  // ---------------- /state — snapshot ----------------
+  app.get("/state", (c) => {
+    const s = monitorState();
+    return c.json({
+      ok: true,
+      running: monitorIsRunning(),
+      metrics: getSessionMetrics(),
+      rotation: s.rotation,
+      x402: s.x402 ? { sessionId: s.x402.sessionId, queriesUsed: s.x402.queriesUsed, queriesLeft: s.x402.maxQueries - s.x402.queriesUsed, expiresAt: s.x402.expiresAt } : null,
+    });
   });
 
   app.post("/monitor/register", async (c) => {

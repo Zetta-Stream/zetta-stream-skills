@@ -62,7 +62,7 @@ async function main() {
 
   console.log("\nContracts:");
   console.log("  ZettaStreamLog:        ", cfg.ZETTA_STREAM_LOG_ADDRESS || "(not deployed)");
-  console.log("  BatchCallDelegate:   ", cfg.BATCH_CALL_DELEGATE_ADDRESS || "(not deployed)");
+  console.log("  BatchCallDelegate:   ", cfg.ZETTA_STREAM_DELEGATE_ADDRESS || "(not deployed)");
   console.log("\nExpected next:");
   console.log("  1. deploy contracts: pnpm contracts:deploy");
   console.log("  2. call ZettaStreamLog.authorizeAgent(<TEE-EVM>) from owner EOA");

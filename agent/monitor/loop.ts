@@ -1,99 +1,140 @@
 /**
- * The 24/7 watcher loop. Every POLL_INTERVAL_MS:
- *   1) Poll the x402 session for each unique symbol used by active watchers
- *   2) Evaluate each watcher's condition
- *   3) If fired, run firewall → (if APPROVED) batch-executor → write audit
- *   4) Emit SSE events
+ * Autonomous rotation loop. Every POLL_INTERVAL_MS:
+ *   1. pull x402 yield signal via queryYieldFeed()
+ *   2. scoreAndGate (full 4-gate set, `force=false`)
+ *   3. if the gate passes, runRotation() — which executes, audits, and mints
+ *   4. stream every step as an SSE event
+ *
+ * Replaces the IntentHub price-watcher. Three consecutive REJECTs auto-pause
+ * the loop (state.lastReject is updated) so operators can investigate before
+ * it keeps retrying.
  */
 import { getConfig } from "../config.js";
-import { queryPrice } from "../x402/query.js";
-import {
-  listWatchers,
-  evaluate,
-  markFired,
-  isCoolingDown,
-  isExpired,
-  type Watcher,
-} from "./trigger.js";
 import { getLogger } from "../lib/logger.js";
-import { emitEvent, type SseEvent } from "../api/events.js";
+import { emitEvent } from "../api/events.js";
+import { runRotation } from "./run-rotation.js";
+import { updateRotation, loadState, updateState } from "../state.js";
 
 const log = getLogger("monitor-loop");
 
 let running = false;
 let timer: ReturnType<typeof setInterval> | null = null;
+let consecutiveRejects = 0;
+const MAX_CONSECUTIVE_REJECTS = 3;
+
+/// Per-owner metrics for the session. Reset on every `start()`.
+interface SessionMetrics {
+  startedAt: number;
+  ticksRun: number;
+  rotationsExecuted: number;
+  totalNetYieldBps: number;
+  medalsMinted: number;
+}
+let session: SessionMetrics | null = null;
 
 export async function tick(): Promise<void> {
-  const watchers = listWatchers();
-  if (watchers.length === 0) return;
-  const symbols = Array.from(new Set(watchers.map((w) => w.condition.symbol)));
-  const prices: Record<string, number> = {};
-  for (const s of symbols) {
-    try {
-      const q = await queryPrice(s);
-      prices[s] = q.price;
-      emitEvent({ type: "poll", symbol: s, price: q.price, latencyMs: q.latencyMs, t: q.t });
-    } catch (e) {
-      log.warn({ err: (e as Error).message, symbol: s }, "poll failed");
-    }
-  }
-  for (const w of watchers) {
-    if (isExpired(w)) {
-      w.status = "expired";
-      emitEvent({ type: "expire", watcher: w.id });
-      continue;
-    }
-    if (isCoolingDown(w)) continue;
-    const p = prices[w.condition.symbol];
-    if (p === undefined) continue;
-    if (!evaluate(w, p)) continue;
-    void fireWatcher(w, p);
-  }
-}
+  if (!session) return;
+  session.ticksRun += 1;
 
-async function fireWatcher(w: Watcher, price: number) {
-  emitEvent({
-    type: "fire",
-    watcher: w.id,
-    price,
-    condition: `${w.condition.symbol} ${w.condition.op} ${w.condition.value}`,
-  } as SseEvent);
+  let result;
   try {
-    // Dynamic import avoids a startup cycle + keeps the loop lean
-    const { runFullIntent } = await import("./run-intent.js");
-    const result = await runFullIntent(w.thenIntent);
-    emitEvent({
-      type: "verdict",
-      watcher: w.id,
-      intentHash: result.intentHash,
-      verdict: result.verdict,
-      confidence: result.confidence,
-      hash: result.hash,
-    } as SseEvent);
-    markFired(w);
+    result = await runRotation({ force: false, tag: "[AUTO]" });
   } catch (e) {
-    log.error({ err: (e as Error).message, watcher: w.id }, "watcher fire failed");
-    emitEvent({ type: "error", watcher: w.id, error: (e as Error).message } as SseEvent);
-    markFired(w);
+    log.error({ err: (e as Error).message }, "runRotation threw unexpectedly");
+    emitEvent({ type: "error", error: (e as Error).message });
+    return;
   }
+
+  switch (result.status) {
+    case "EXECUTED":
+      session.rotationsExecuted += 1;
+      session.totalNetYieldBps += result.decision.netYieldBps;
+      if (result.medal) session.medalsMinted += 1;
+      consecutiveRejects = 0;
+      break;
+    case "REJECTED":
+    case "ERROR":
+      consecutiveRejects += 1;
+      updateRotation({
+        lastReject: { reason: result.reason, at: Date.now() },
+      });
+      if (consecutiveRejects >= MAX_CONSECUTIVE_REJECTS) {
+        log.warn(
+          { consecutiveRejects },
+          "auto-stopping loop after consecutive REJECTs",
+        );
+        emitEvent({
+          type: "error",
+          error: `loop auto-stopped after ${consecutiveRejects} consecutive REJECTs — ${result.reason}`,
+        });
+        stop();
+      }
+      break;
+    case "HOLD":
+    case "GATED":
+    default:
+      break;
+  }
+
+  emitEvent({ type: "heartbeat", t: Date.now() });
 }
 
-export function start(): void {
-  if (running) return;
-  running = true;
+export function start(autoStopAfterSeconds?: number): { watcherId: string; startedAt: number } {
   const cfg = getConfig();
-  log.info({ intervalMs: cfg.POLL_INTERVAL_MS }, "monitor loop starting");
+  if (running) {
+    return { watcherId: "watcher_singleton", startedAt: session?.startedAt ?? Date.now() };
+  }
+  running = true;
+  consecutiveRejects = 0;
+  session = {
+    startedAt: Date.now(),
+    ticksRun: 0,
+    rotationsExecuted: 0,
+    totalNetYieldBps: 0,
+    medalsMinted: 0,
+  };
+  updateState({ monitorRunning: true });
+  log.info({ intervalMs: cfg.POLL_INTERVAL_MS, autoStopAfterSeconds }, "monitor loop starting");
   timer = setInterval(() => {
     void tick().catch((e) =>
       log.error({ err: (e as Error).message }, "tick failed"),
     );
   }, cfg.POLL_INTERVAL_MS);
+  if (autoStopAfterSeconds && autoStopAfterSeconds > 0) {
+    setTimeout(() => {
+      log.info({ autoStopAfterSeconds }, "auto-stop deadline reached");
+      stop();
+    }, autoStopAfterSeconds * 1000);
+  }
+  return { watcherId: "watcher_singleton", startedAt: session.startedAt };
 }
 
-export function stop(): void {
-  if (!running) return;
+export function stop(): SessionMetrics | null {
+  if (!running) return session;
   running = false;
   if (timer) clearInterval(timer);
   timer = null;
-  log.info("monitor loop stopped");
+  updateState({ monitorRunning: false });
+  const metrics = session;
+  session = null;
+  log.info({ metrics }, "monitor loop stopped");
+  return metrics;
+}
+
+export function isRunning(): boolean {
+  return running;
+}
+
+export function getSessionMetrics(): SessionMetrics | null {
+  return session;
+}
+
+export function currentState() {
+  const s = loadState();
+  return {
+    monitorRunning: running,
+    session,
+    rotation: s.rotation,
+    x402: s.x402,
+  };
 }

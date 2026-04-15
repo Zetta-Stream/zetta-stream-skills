@@ -32,6 +32,15 @@ interface Session {
 const sessions = new Map<string, Session>();
 const priceCache = new Map<string, { price: number; t: number }>();
 
+/// Current yield-feed state. Default values are loosely tuned so the scorer returns
+/// a UNIV4 rotation (+fee spread > IL penalty). Flip with /debug/set-yield/*.
+const yieldFeed = {
+  aavePoolApy: 0.031,
+  uniFeeApr: 0.055,
+  ilRisk: 0.22,
+  confidence: 78,
+};
+
 function validSession(id: string | undefined | null): Session | null {
   if (!id) return null;
   const s = sessions.get(id);
@@ -117,6 +126,46 @@ export function buildApp() {
     });
   });
 
+  // --- Yield feed: the Zetta-Stream signal source ---
+  app.get("/yield/feed", async (c) => {
+    const sid = c.req.query("session") ?? c.req.header("X-Session-Id");
+    const s = validSession(sid);
+    if (!s) {
+      const payload = {
+        x402Version: 2,
+        accepts: [
+          {
+            network: "eip155:196",
+            amount: cfg.X402_PAYMENT_AMOUNT.toString(),
+            payTo: cfg.X402_PAYTO_ADDRESS || "0x0000000000000000000000000000000000000000",
+            asset: cfg.X402_ASSET_ADDRESS,
+            maxTimeoutSeconds: 300,
+            description: "Zetta-Stream reusable yield-feed session (1000 queries / 5 min)",
+          },
+        ],
+      };
+      const b64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+      c.status(402);
+      c.header("Content-Type", "application/json");
+      return c.body(b64);
+    }
+    s.queriesUsed += 1;
+    return c.json({
+      aavePoolApy: yieldFeed.aavePoolApy,
+      uniFeeApr: yieldFeed.uniFeeApr,
+      ilRisk: yieldFeed.ilRisk,
+      confidence: yieldFeed.confidence,
+      ts: Math.floor(Date.now() / 1000),
+      source: "x402",
+      session: {
+        id: s.id,
+        queriesUsed: s.queriesUsed,
+        queriesLeft: s.maxQueries - s.queriesUsed,
+        expiresAt: s.expiresAt,
+      },
+    });
+  });
+
   // --- Session open: exchange payment proof for a sessionId ---
   app.post("/session/open", async (c) => {
     const body = await c.req.json().catch(() => null);
@@ -189,6 +238,17 @@ export function buildApp() {
       priceCache.set(symbol, { price: value, t: Date.now() });
       return c.json({ ok: true, symbol, price: value });
     });
+    // Flip any of the four yield-feed knobs at runtime for demo scripts.
+    app.post("/debug/set-yield/:key/:value", (c) => {
+      const key = c.req.param("key") as keyof typeof yieldFeed;
+      const value = Number(c.req.param("value"));
+      if (!(key in yieldFeed) || !Number.isFinite(value)) {
+        return c.json({ ok: false, error: `unknown key '${key}' or non-finite value` }, 400);
+      }
+      yieldFeed[key] = value;
+      return c.json({ ok: true, yieldFeed });
+    });
+    app.get("/debug/yield", (c) => c.json({ ok: true, yieldFeed }));
   }
 
   return app;

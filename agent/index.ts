@@ -83,7 +83,7 @@ async function runDemo(scenarioId: Scenario["id"] | undefined) {
   log.info({ narration: s.narration }, "narration");
   const coreProvisioned =
     !!cfg.ZETTA_STREAM_LOG_ADDRESS &&
-    !!cfg.BATCH_CALL_DELEGATE_ADDRESS &&
+    !!cfg.ZETTA_STREAM_DELEGATE_ADDRESS &&
     !!cfg.DEMO_EOA_PRIVATE_KEY;
   // Per-scenario extra provisioning to actually hit EXECUTED:
   //   phishing   → no extras (REJECTED is the goal)

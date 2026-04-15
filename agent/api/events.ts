@@ -3,6 +3,7 @@
  * publish events; the /sse endpoint subscribes.
  */
 import type { Intent } from "../firewall/intent-types.js";
+import type { Decision, GateResult, YieldSignal } from "../decision/types.js";
 
 export type SseEvent =
   | { type: "poll"; symbol: string; price: number; latencyMs: number; t: number }
@@ -11,7 +12,11 @@ export type SseEvent =
   | { type: "intent"; intent: Intent; intentHash: string }
   | { type: "expire"; watcher: string }
   | { type: "error"; watcher?: string; error: string }
-  | { type: "heartbeat"; t: number };
+  | { type: "heartbeat"; t: number }
+  | { type: "signal"; signal: YieldSignal }
+  | { type: "analyze"; owner: string; decision: Decision; gate: GateResult }
+  | { type: "rotation"; owner: string; from: string; to: string; batchTxHash?: string; auditTx?: string; netYieldBps: number }
+  | { type: "medal"; owner: string; tokenId: number; mintTx: string };
 
 type Subscriber = (event: SseEvent) => void;
 

@@ -44,27 +44,36 @@ function main() {
   }
 
   let env = readFileSync(ENV_PATH, "utf8");
+  // The same EOA plays four roles in the hackathon demo: EIP-7702 demo EOA,
+  // contract deployer, Medal NFT owner, and Delegate allowlist factory. In
+  // production each of these would be a separate key (multisig for factory).
   env = setEnvVar(env, "DEMO_EOA_PRIVATE_KEY", privateKey);
   env = setEnvVar(env, "DEMO_EOA_ADDRESS", account.address);
+  env = setEnvVar(env, "DEPLOYER_PRIVATE_KEY", privateKey);
+  env = setEnvVar(env, "MEDAL_OWNER_ADDRESS", account.address);
+  env = setEnvVar(env, "DELEGATE_FACTORY_ADDRESS", account.address);
+  env = setEnvVar(env, "X402_PAYTO_ADDRESS", account.address);
   writeFileSync(ENV_PATH, env);
 
-  console.log("\n╭──────────────── ZettaStream Demo EOA ────────────────╮");
-  console.log(`│ address:      ${account.address.padEnd(45)} │`);
-  console.log(`│ private key:  ${privateKey.slice(0, 14)}…${privateKey.slice(-14).padStart(28)} │`);
-  console.log("╰────────────────────────────────────────────────────╯");
-  console.log("\nWritten to .env:");
-  console.log("  DEMO_EOA_PRIVATE_KEY=" + privateKey);
-  console.log("  DEMO_EOA_ADDRESS=" + account.address);
+  console.log("\n╭──────────────── Zetta-Stream Agent EOA ────────────────╮");
+  console.log(`│ address:      ${account.address.padEnd(47)} │`);
+  console.log(`│ private key:  ${privateKey.slice(0, 14)}…${privateKey.slice(-14).padStart(30)} │`);
+  console.log("╰────────────────────────────────────────────────────────╯");
+  console.log("\nWritten to .env (same EOA plays all four roles):");
+  console.log("  DEMO_EOA_PRIVATE_KEY     = " + privateKey);
+  console.log("  DEMO_EOA_ADDRESS         = " + account.address);
+  console.log("  DEPLOYER_PRIVATE_KEY     = <same>");
+  console.log("  MEDAL_OWNER_ADDRESS      = " + account.address);
+  console.log("  DELEGATE_FACTORY_ADDRESS = " + account.address);
+  console.log("  X402_PAYTO_ADDRESS       = " + account.address);
+  console.log("\nFund on:");
+  console.log("  1. X Layer (chainId 196)  — ~1 OKB  for gas when deploying Log + Medal");
+  console.log("  2. Arbitrum (chainId 42161) — ~0.005 ETH for gas when deploying Delegate");
+  console.log("  3. Arbitrum  ~50 USDC  for demo rotations (Aave ↔ UniV4)");
   console.log("\nNext steps:");
-  console.log("  1. Fund this address on X Layer with ~1 OKB (for gas) + ~100 USDC (for demo swaps)");
-  console.log("     → send from an exchange that supports X Layer or bridge via OKX");
-  console.log("  2. Separately run the TEE wallet (for inner-call signing):");
-  console.log("     onchainos wallet login <your-email>");
-  console.log("     onchainos wallet verify <code>");
-  console.log("     pnpm verify:wallet");
-  console.log("  3. Deploy the two contracts:");
-  console.log("     pnpm contracts:deploy");
-  console.log("  4. From the Demo EOA, call ZettaStreamLog.authorizeAgent(<TEE-EVM address>)");
+  console.log("  1. `onchainos wallet login <email>` + `onchainos wallet verify <code>`");
+  console.log("  2. `pnpm contracts:deploy` (deploys all three contracts to their chains)");
+  console.log("  3. From the EOA, call `ZettaStreamLog.authorizeAgent(<TEE-EVM address>)`");
   console.log("\nReminder: .env is gitignored. Do NOT share this private key.");
 }
 

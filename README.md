@@ -1,130 +1,159 @@
-# ZettaStream — Web3's Agentic Kernel
+# Zetta-Stream — Intent-Based Autonomous Yield Stream Gateway
 
-> One sentence in, auditable on-chain outcome out.
-> TEE-simulated · EIP-7702 batched · x402-intel-fed · X Layer-audited.
+> *Your USDC, auto-shuffled between Aave V3 and Uniswap V4 by an AI agent, every rotation byte-scanned in TEE before it signs, every decision immutably logged on X Layer, every profitable rotation minted as a collectible Medal.*
 
-Built for the **OKX Onchain OS Hackathon**. Not a DeFi app — an *operating system* layer
-other agents can build on.
+Built for the **OKX Onchain OS Hackathon**. Zetta-Stream is not another DeFi app — it's the **minimum viable autonomous yield OS**: four primitives (x402 V2 + EIP-7702 + TEE + MCP) structurally fused into a self-driving rotator that a user can command in one English sentence.
 
 ## What it does
 
-You say it in English. ZettaStream does the rest.
+You say it in English. Zetta-Stream does the rest.
 
-> "approve 100 USDC to this vault and deposit" → **REJECTED** (phishing spender)
+> **"Open an x402 yield session and fund 200 USDC"** → single $0.001 payment on X Layer returns a `sessionId` good for 1000 queries / 5 min. OKX cross-chain router bridges USDC into Arbitrum.
 >
-> "swap 0.1 OKB to USDC then stake" → **EXECUTED** in one batched X Layer tx, ~58% gas saved
+> **"Preview a rotation right now"** → fetches the live yield signal, runs the deterministic scorer (`net_bps = (gross_spread − IL_penalty − gas_cost) × confidence/100`), dry-runs through the TEE firewall. No tx.
 >
-> "watch ETH; when it drops below $3,400, move 500 USDC from X Layer to Base Aave" → runs autonomously for hours; fires cross-chain batch on trigger
+> **"Rotate now"** → composes a 4-6 call batch (`aave.withdraw → usdc.approve → univ4.mint`), wraps it in an EIP-7702 Type-4 auth tuple, TEE-signs every inner call, broadcasts on Arbitrum, logs to X Layer, mints a Medal if profit > 0 bps.
+>
+> **"Turn on the autonomous stream"** → a 15s-tick loop pulls signals, gates on dwell + cooldown + confidence + spread, and rotates hands-free until you stop it.
 
-Every decision — approved, rejected, executed — lands on
-[`ZettaStreamLog`](https://www.oklink.com/xlayer) on X Layer (chainId 196). Open the
-contract; the audit trail is the product.
+## Four technical pillars (→ four hackathon scoring dims)
 
-## Four technical pillars
-
-| Pillar | Skill | OKX Products |
+| Pillar | Skill | OKX / External Products |
 |---|---|---|
-| Intent Firewall (TEE simulate + risk-scan before sign) | `zetta-stream-analyze` + `zetta-stream-action` | `okx-security` + `okx-agentic-wallet` |
-| EIP-7702 Dynamic Account Upgrade (batch exec, Multicall fallback) | `zetta-stream-action` | `okx-agentic-wallet` + `BatchCallDelegate.sol` |
-| x402 V2 Reusable Intelligence Sessions | `zetta-stream-fund` + `zetta-stream-monitor` | `okx-x402-payment` + `okx-dex-market` |
-| AggLayer-style Cross-chain Router | `zetta-stream-fund` + `zetta-stream-action` | `okx-dex-swap` (cross-chain) |
+| **A. Intent Firewall** (TEE simulate + allowlist + risk-scan) | `zetta-stream-analyze` + `zetta-stream-action` | `okx-security` + `okx-agentic-wallet` + `ZettaStreamDelegate` allowlist |
+| **B. Dynamic Account Upgrade** (EIP-7702 → Multicall fallback) | `zetta-stream-action` | `okx-agentic-wallet` + `ZettaStreamDelegate` |
+| **C. Yield Intelligence** (x402 V2 reusable session) | `zetta-stream-fund` + `zetta-stream-monitor` | `okx-x402-payment` + Aave V3 + Uniswap V4 feeds |
+| **D. Cross-chain Audit Backbone** (Arbitrum exec ↔ X Layer audit) | `zetta-stream-fund` + `zetta-stream-action` | `okx-dex-swap` cross-chain + X Layer |
+
+## On-chain evidence (all verifiable on OKLink — X Layer chainId 196)
+
+| Artifact | Address / TX |
+|---|---|
+| **`ZettaStreamLog`** (audit ledger) | [`0xC830736987Aa94ce20D7188C5640a130a2723d10`](https://www.oklink.com/xlayer/address/0xC830736987Aa94ce20D7188C5640a130a2723d10) |
+| **`ZettaStreamMedal`** (ERC-721 profit badge, on-chain SVG) | [`0xb8E1cd1914c08e4Fd06Ec695D78572527D9CBCA3`](https://www.oklink.com/xlayer/address/0xb8E1cd1914c08e4Fd06Ec695D78572527D9CBCA3) |
+| Agent EOA | [`0xFE31162dF10e9D6ff92eE0057f8E9652Bd5f210C`](https://www.oklink.com/xlayer/address/0xFE31162dF10e9D6ff92eE0057f8E9652Bd5f210C) |
+| Deploy `ZettaStreamLog` | [`0xc0b0b320…2dd80`](https://www.oklink.com/xlayer/tx/0xc0b0b320ca0261f25e17ada9e676d78694dc057884493a2368c2f97fac12dd80) |
+| Deploy `ZettaStreamMedal` | [`0x2d7dd71f…ba24c`](https://www.oklink.com/xlayer/tx/0x2d7dd71f8776b0fdd08701af1e19e00ea7d7097638c6c13cc719425c4ddba24c) |
+| Genesis rotation log (AAVE→UNIV4, +85 bps) | [`0x02737799…2ac97`](https://www.oklink.com/xlayer/tx/0x0273779900d7e4c21060fe6a2afd90b6f7df4f635fc8620b3e0e7ea39932ac97) |
+| Genesis Medal mint (`tokenId=0`, +85 bps) | [`0x1e53c5c0…321a1`](https://www.oklink.com/xlayer/tx/0x1e53c5c030a84ef3804a430aaa428234a97dc76a2d61ae06c6bb4a1b325321a1) |
+| **`ZettaStreamDelegate`** (Arbitrum chainId 42161, EIP-7702 target + allowlist) | [`0xC830736987Aa94ce20D7188C5640a130a2723d10`](https://arbiscan.io/address/0xC830736987Aa94ce20D7188C5640a130a2723d10) |
+| Deploy `ZettaStreamDelegate` on Arbitrum | [`0x89e92fee…fdc9d`](https://arbiscan.io/tx/0x89e92feecb288ea9320c4264d4f55ae2230d374a6c7415c87dd653cb07ffdc9d) |
+
+## Architecture (two-chain split)
+
+```
+src/ (Next.js dashboard)        agent/ (Node 22 + tsx)         contracts/ (Foundry)
+
+  app/page.tsx ◀──SSE──         decision/                       X Layer (196)
+  app/audit/page.tsx            ├─ scorer · rotator             ├─ ZettaStreamLog.sol
+  app/medals/page.tsx           └─ intent-builder               └─ ZettaStreamMedal.sol
+                                clients/
+                                ├─ aave-v3
+                                └─ uniswap-v4                   Arbitrum (42161)
+                                firewall/                       └─ ZettaStreamDelegate.sol
+                                ├─ planner · simulator             (allowlist + executeBatch)
+                                ├─ risk-scan · verdict
+                                eip7702/
+                                ├─ pectra-probe · authorize
+                                ├─ batch-executor
+                                └─ gas-compare
+                                x402/
+                                ├─ session-client · query
+                                └─ mock-server (:8402)
+                                medal/medal-mint
+                                monitor/loop · trigger
+                                api/server (:7777)
+                                lib/okx-cli · viem-clients · log-encoder
+
+               ┌────────── 10+ OKX skills ──────────┐
+               │  .agents/skills/okx-*               │
+               │  .agents/project-skills/zetta-stream-* │
+               └─────────────────────────────────────┘
+```
+
+## Deterministic scoring formula (no ML)
+
+Every rotation is traceable back to this integer-only bps math:
+
+```
+gross_spread_bps = (target_apr − current_apr) × 10000
+il_penalty_bps   = target == UNIV4 ? round(ilRisk × 400) : 0    // up to 400 bps
+gas_cost_bps     = round(ESTIMATED_GAS_USD / NOTIONAL_USD × 10000)
+confidence_mult  = signal.confidence / 100
+net_bps          = round((gross_spread − il_penalty − gas_cost) × confidence_mult)
+```
+
+Four hard gates must pass before any rotation fires in the autonomous loop:
+1. `net_bps ≥ YIELD_MIN_SPREAD_BPS` (default 30)
+2. `now − lastRotatedAt ≥ COOLDOWN_SECONDS` (default 1800)
+3. same target persisted across ≥3 consecutive ticks (dwell, default 180s)
+4. `confidence ≥ MIN_CONFIDENCE_APPROVE` (default 60)
+
+The manual `zetta-stream-action` skill sets `force=true` to skip gates 3 and 4 — never 1, and **never** the firewall.
 
 ## Quickstart
 
 ```bash
 pnpm install
 
-# 1. Login to the TEE wallet (one-time, OTP)
+# 1. Generate a throwaway agent EOA (writes to .env)
+pnpm wallet:generate
+
+# 2. Fund the EOA on X Layer (~1 OKB), Arbitrum (~0.005 ETH), Arbitrum USDC (~50)
+
+# 3. Login to the TEE wallet
 onchainos wallet login you@example.com
 onchainos wallet verify <code>
 
-# 2. Deploy the two contracts to X Layer
-cp .env.example .env     # fill DEPLOYER_PRIVATE_KEY
-pnpm contracts:test
-pnpm contracts:deploy
+# 4. Deploy all three contracts (X Layer: Log+Medal, Arbitrum: Delegate)
+pnpm contracts:test     # 31/31 should pass
+pnpm contracts:deploy   # auto-updates .env with new addresses
 
-# 3. Paste the two addresses back into .env (ZETTA_STREAM_LOG_ADDRESS, BATCH_CALL_DELEGATE_ADDRESS)
-
-# 4. Run the agent + mock x402 server
-pnpm agent:mock-x402 &    # :4402 session gateway
-pnpm agent:monitor        # :7777 API + 24/7 loop
-
-# 5. Open the dashboard
-pnpm dev                  # http://localhost:3000/firewall
+# 5. Run the stack
+pnpm dev:all            # agent(:7777) + x402-mock(:8402) + dashboard(:3000)
 ```
 
-## Architecture (60-second read)
+## Skills-first demo (what judges see)
 
 ```
-            ┌─ User (NL) ──────────────────────────┐
-            │                                      ▼
-            │      Claude harness (trigger phrases match SKILL.md)
-            │                                      │
-            │                                      ▼
-            │      zetta-stream-action skill ──▶ POST /intent {kind, steps}
-            │                                      │
-            │                  ┌───────────────────┤
-            │                  ▼                   ▼
-            │        planner.ts            simulator.ts
-            │        (OKX DEX quote,       (viem eth_call +
-            │         Aave/UniV3 ABI)       stateOverride)
-            │                  │                   │
-            │                  └─────────┬─────────┘
-            │                            ▼
-            │                   risk-scan.ts
-            │                   (okx-security tx-scan + dapp-scan)
-            │                            │
-            │                            ▼
-            │                        verdict
-            │                  ┌────────┼────────┐
-            │             REJECTED   APPROVED    WARN
-            │                  │        │         │
-            │                  │        ▼         ▼
-            │                  │   batch-executor.ts
-            │                  │   (7702 → Multicall fallback)
-            │                  │        │
-            │                  ▼        ▼
-            │        ZettaStreamLog.logIntent(...)   ← X Layer (196)
-            │        ZettaStreamLog.logDelegation(...)  ← X Layer (196)
-            └────────────────────────────────────────────┘
+0. pnpm dev:all   # agent + mock + dashboard
+1. "Open an x402 yield session and fund 200 USDC"
+   → zetta-stream-fund → X Layer payment tx + sessionId
+2. "Preview a rotation right now"
+   → zetta-stream-analyze → {target:UNIV4, netBps:85, confidence:78} + firewall SAFE
+3. "Rotate now"
+   → zetta-stream-action → 7702 batch on Arbitrum (Aave withdraw → UniV4 mint)
+   → X Layer audit tx + Medal mint tx (netBps > 0)
+4. "Turn on the autonomous stream for 10 minutes"
+   → zetta-stream-monitor → SSE feed to dashboard; 2-3 automatic rotations
+     driven by /debug/set-yield scripted signals
+5. "Show my rotation history"
+   → ZettaStreamLog.recent(10) → OKLink links; Medal gallery on dashboard
 ```
-
-## Live artifacts (all X Layer · chainId 196)
-
-| Thing | Address / TX |
-|---|---|
-| `ZettaStreamLog` (audit) | [`0x928a7ffDda4Ba5Ed154094cAbd08064617728E6a`](https://www.oklink.com/xlayer/address/0x928a7ffDda4Ba5Ed154094cAbd08064617728E6a) |
-| `BatchCallDelegate` (7702/Multicall) | [`0x5b7c73a3482Fd63E1953037D763570d13d8d26D2`](https://www.oklink.com/xlayer/address/0x5b7c73a3482Fd63E1953037D763570d13d8d26D2) |
-| `TestVault` (scenario 2 target) | [`0x21edDBa0e33B9869EbF374C7c5Ee54650816DB8b`](https://www.oklink.com/xlayer/address/0x21edDBa0e33B9869EbF374C7c5Ee54650816DB8b) |
-| Agent EOA | `0x13A7D19aD9de11fe1c6Eb9a9A093BB535A88f143` |
-| OKX DEX swap (0.04 OKB → 3.33 USDC) | [`0x2f1de916…afec62`](https://www.oklink.com/xlayer/tx/0x2f1de9167247b04302132b1d9a18aa64cc798d6be890de5ff6e572d578afec62) |
-| First batched tx (3 deposits, ~75% gas saved) | [`0x710cbfb6…cba43`](https://www.oklink.com/xlayer/tx/0x710cbfb6b8cab3597256d5912a533730da9bb5102de973abdc28244c2efcba43) |
-| Second batched tx (~85% gas saved) | [`0x74557c1c…d7e38`](https://www.oklink.com/xlayer/tx/0x74557c1c2ae38da397d0d9bef211a5d575223dd4d964ee3b38145385565d7e38) |
-| Pectra/EIP-7702 probe result | `supports7702=false` (X Layer runs reth v1.10.2) → **Multicall fallback active** |
-| Live audit entries at last check | **8** on ZettaStreamLog · see [entries](https://www.oklink.com/xlayer/address/0x928a7ffDda4Ba5Ed154094cAbd08064617728E6a) |
 
 ## Honest disclosures
 
-- **X Layer Pectra/EIP-7702**: production support uncertain. Code path 1 tries type-0x04
-  authorization tx; if the RPC rejects it (`pectra-probe.ts`), path 2 falls back to a
-  standard tx calling `BatchCallDelegate.executeBatch` as a Multicall. UX and gas-savings
-  report are identical.
-- **viem `signAuthorization` needs a local private key**: the demo EOA's key signs
-  the 7702 authorization element. Every inner call inside the batch is TEE-signed via
-  `onchainos wallet contract-call`. When OKX exposes TEE-based authorization signing,
-  we'll remove `DEMO_EOA_PRIVATE_KEY`.
-- **x402 facilitator**: real `onchainos payment x402-pay` TEE path works for single
-  payments. Our `mock-server.ts` layers `sessionId` issuance on top so one payment
-  amortizes across thousands of sub-second queries — this is a real hackathon composition,
-  not a workaround.
+- **Execution chain split**: Uniswap V4 mainnet liquidity is concentrated on Arbitrum + Base, where Pectra is also live. We run the EIP-7702 batch on **Arbitrum**; X Layer handles audit + Medal. This cross-chain split is intentional and advertised as the cross-chain prize's anchor, not a workaround.
+- **viem `signAuthorization` needs a local private key**: the demo EOA signs the 7702 authorization tuple. Every inner call in the batch is TEE-signed via `onchainos wallet contract-call`. When OKX exposes TEE authorization-signing, we remove `DEMO_EOA_PRIVATE_KEY`.
+- **x402 V2 session layer**: the stock `okx-x402-payment` skill is single-shot. Our `mock-server.ts` issues a `sessionId` after one real payment so 100+ subsequent queries amortize — this is a real hackathon composition, explicitly documented.
+- **Medal NFT metadata**: fully on-chain `data:application/json;base64,…` blob with an embedded SVG. No IPFS, no off-chain dependency.
 
-## Demo scenarios
+## Tests
 
-Run any of them with `pnpm agent:demo -- scenario=<name>`.
+- `pnpm contracts:test` → **31/31 forge tests** (Log 16, Delegate 6, Medal 6, TestVault 3)
+- `pnpm test` → **33/33 vitest** (scorer 7 + rotator 7 + intent-builder 5 + firewall 6 + crosschain 4 + log-encoder 4)
+- `pnpm typecheck` → zero TS errors
+- `pnpm verify` → **14/14 health checks** (env + X Layer contracts + Arbitrum contract + balances + live services)
 
-1. **phishing** (60s) — malicious vault flagged → REJECTED verdict written to X Layer; no execute tx
-2. **gas-save** (75s) — 3-step batch (SWAP+APPROVE+STAKE) as one X Layer tx; ~58% gas vs 3 independent txs
-3. **x402-cross** (90s) — x402 session (1 payment → 1,200+ queries); ETH threshold trigger; XL→Base Aave batch
+## Delivery roadmap
+
+| Day | Work |
+|---|---|
+| ✅ **Day 1 AM** | Fork IntentHub scaffold · 4 skills stubbed · 3 contracts + tests passing |
+| ✅ **Day 1 PM** | X Layer deploy (Log + Medal) · genesis rotation + medal written on-chain · decision engine (scorer + rotator + intent-builder) · `/analyze` endpoint wired · x402 mock `/yield/feed` live · Arbitrum Delegate deployed |
+| ✅ **Day 2** | Real `clients/aave-v3.ts` encoders (supply/withdraw/readReserve) · real `clients/uniswap-v4.ts` PositionManager with Actions-based `modifyLiquidities` · intent-builder now emits valid Aave+UniV4 calldata · 5 new intent-builder tests |
+| ✅ **Day 3** | `monitor/loop.ts` rewired signal-driven · `run-rotation.ts` orchestrator (signal→score→gate→intent→exec→audit→medal) · `medal/medal-mint.ts` wrapper · `POST /rotate` + `POST /monitor/{start,stop}` + `GET /state` endpoints · SSE event types extended (signal / rotation / medal) |
+| ✅ **Day 4** | Live dashboard hero (3-Z logo + video bg + real-time X Layer stats) · `/audit` rotation ledger page · `/medals` ERC-721 gallery (renders on-chain SVGs) · `scripts/verify.ts` end-to-end health checker · `pnpm dev:all` concurrent stack |
 
 ## License
 

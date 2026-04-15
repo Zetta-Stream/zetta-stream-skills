@@ -1,195 +1,121 @@
 ---
 name: zetta-stream-fund
-description: "Use this skill when the user wants to PREPARE the agent for action — either by opening a reusable x402 data session (one payment amortized across thousands of sub-second queries) OR by bridging assets from another chain into X Layer via OKX DEX cross-chain routing. Triggers: 'fund the agent', 'open x402 session', 'prepay data feed', 'set up market data feed', 'bridge USDC to X Layer', 'move funds from Base', 'prepare the agent', 'start a data session', 'subscribe to price feed'. Do NOT use to execute an actual intent — use zetta-stream-action. Do NOT use to preview an intent — use zetta-stream-analyze. Do NOT use to start autonomous monitoring — use zetta-stream-monitor."
+description: "Use this skill when the user wants to FUND Zetta-Stream — either (a) open a reusable x402 V2 session for the yield-signal feed by paying ~$0.001 USDC on X Layer once and receiving a sessionId good for 100+ subsequent queries, OR (b) bridge USDC from X Layer / Base / mainnet into Arbitrum (the execution chain) so the agent has working capital for Aave/UniV4 rotations. Triggers: 'fund zetta', 'open an x402 session', 'pay for the yield feed', 'bridge USDC for zetta', 'deposit into the stream', 'top up the agent', 'move USDC to Arbitrum'. The two targets are mutually exclusive within one call. Do NOT use to actually rotate — use zetta-stream-action. Do NOT use to start the autonomous loop — use zetta-stream-monitor."
 license: MIT
 metadata:
   author: zetta-stream
   version: "0.1.0"
 ---
 
-# ZettaStream Fund — Open an x402 session or bridge into X Layer
+# Zetta-Stream Fund — Open x402 session OR bridge USDC into the agent
 
-Two modes in one skill — they share the pattern "one TEE signature unlocks many
-downstream operations":
+Two related setup steps that the user invokes before the first rotation:
 
-1. **`target: "x402"`** — pay once via `onchainos payment x402-pay`; receive a
-   sessionId valid for N queries / T minutes. Downstream skills fetch data at
-   <100ms / $0.001 amortized cost.
-2. **`target: "bridge"`** — cross-chain route via `onchainos swap execute` with
-   different `--chain`/`--chain-index` source/dest; pick the best path via
-   agent-internal scorer.
+1. **`target=x402`** — pays a small fee in USDC on X Layer to open an x402 V2 reusable session. The agent then uses the cached `sessionId` for all subsequent yield-feed queries (TTL 5 min, ~1000 queries amortised over one payment).
+2. **`target=bridge`** — moves USDC from a source chain to Arbitrum (the execution chain) using the OKX cross-chain swap router. The agent's working position lives on Arbitrum.
 
 ## Architecture
 
 ```
-                    ┌─────────────────────────────┐
-                    │   target: "x402"            │
-                    │                             │
-                    │   1. Call /x402/prepay      │
-                    │   2. onchainos payment      │
-                    │      x402-pay               │
-                    │   3. POST /session/open     │
-                    │      to mock-server (:4402) │
-                    │   4. Cache sessionId        │
-                    └─────────────────────────────┘
-
-                    ┌─────────────────────────────┐
-                    │   target: "bridge"          │
-                    │                             │
-                    │   1. okx-dex-swap quote     │
-                    │      (cross-chain)          │
-                    │   2. scorer picks best      │
-                    │   3. onchainos swap execute │
-                    │   4. wait for arrival tx    │
-                    └─────────────────────────────┘
+target=x402:                        target=bridge:
+   POST /fund {target:"x402"}          POST /fund {target:"bridge", from:8453, amount:"200"}
+       ↓                                  ↓
+   x402 401/402 → sessionRequest      crosschain/quote (OKX)
+       ↓                                  ↓
+   TEE sign EIP-712 + USDC transfer   firewall.run (planner → sim → scan)
+       ↓                                  ↓
+   POST /session/open                  EIP-7702 batch on source chain
+       ↓                                  ↓
+   sessionId stored in state          ZettaStreamLog.logRotation(reason="fund:bridge")
 ```
 
 ## Input schema
 
 ```json
+// Open x402 session
+{ "target": "x402", "owner": "0x<EOA>" }
+
+// Bridge USDC into Arbitrum
 {
-  "target": "x402" | "bridge",
-
-  // -- x402 mode --
-  "asset": "0x<USDG-or-USDC>",       // optional, default X402_ASSET_ADDRESS
-  "amount_usd": "0.001",              // optional, default 0.001 per query
-  "session_ttl_seconds": 300,         // optional
-  "max_queries": 1000,                // optional
-
-  // -- bridge mode --
-  "from_chain": "base",
-  "to_chain": "xlayer",
-  "token_symbol": "USDC",
-  "amount": "500"
+  "target": "bridge",
+  "owner": "0x<EOA>",
+  "from": 196 | 8453 | 1,
+  "amount": "200"
 }
 ```
 
 ## Prerequisites
 
-1. Wallet logged in
-2. Mock x402 server running (`pnpm agent:mock-x402` on :4402) — OR a real facilitator URL
-3. For bridge: `onchainos` session valid on both source and dest chain
-4. Balance sufficient on source chain
+- Wallet logged in
+- `X402_FACILITATOR_URL`, `X402_PAYTO_ADDRESS`, `X402_PAYMENT_AMOUNT` set
+- For bridge: `EXEC_CHAIN_RPC_URL`, source-chain RPC, USDC addresses on both chains
 
 ## Command Index
 
 | # | Command | Purpose |
 |---|---|---|
-| 1 | `POST :7777/fund` | Entry for both modes |
-| 2 | `onchainos payment x402-pay` | Sign one x402 payment |
-| 3 | `POST :4402/session/open` | Exchange payment proof for sessionId |
-| 4 | `onchainos swap execute --chain <src>` | Cross-chain bridge |
+| 1 | `POST http://localhost:7777/fund` | Single endpoint, dispatches by `target` |
+| 2 | `onchainos x402 pay` | TEE pay flow (used internally for `target=x402`) |
+| 3 | `onchainos swap quote --cross-chain` | Bridge route (used internally for `target=bridge`) |
 
-## Main Flow — x402 mode
-
-### Step 1 — Submit request
+## Main flow — `target=x402`
 
 ```bash
 curl -X POST http://localhost:7777/fund \
-  -d '{"target":"x402","amount_usd":"0.001","max_queries":1000}'
+  -H 'Content-Type: application/json' \
+  -d '{"target":"x402","owner":"0x..."}'
 ```
 
-### Step 2 — Agent calls facilitator
+Response:
 
-Agent first sends an unauthenticated `GET :4402/price/ETH` and receives:
-
+```json
+{
+  "target": "x402",
+  "sessionId": "sess_abc...",
+  "ttlSeconds": 300,
+  "maxQueries": 1000,
+  "paymentTx": "0x..."
+}
 ```
-HTTP/1.1 402 Payment Required
-Content-Type: application/json
-Body: <base64-encoded x402 payload>
-```
 
-### Step 3 — TEE signs payment
+Show the user: "Opened an x402 yield-feed session for ~$0.001 — good for 1000 queries or 5 min, whichever ends first. Tx: `https://www.oklink.com/xlayer/tx/<paymentTx>`."
+
+## Main flow — `target=bridge`
 
 ```bash
-onchainos payment x402-pay \
-  --network eip155:196 \
-  --amount 1000 \
-  --pay-to $X402_PAYTO_ADDRESS \
-  --asset $X402_ASSET_ADDRESS \
-  --max-timeout-seconds 300
+curl -X POST http://localhost:7777/fund \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"bridge","owner":"0x...","from":8453,"amount":"200"}'
 ```
 
-Returns `{ signature, authorization }`.
+Response:
 
-### Step 4 — Exchange for session
-
-```bash
-curl -X POST :4402/session/open \
-  -d '{"signature":"...","authorization":{...},"maxQueries":1000}'
+```json
+{
+  "target": "bridge",
+  "verdict": "APPROVED",
+  "exec": { "mode": "EIP7702", "batchTxHash": "0x...", "callCount": 3 },
+  "audit": { "rotationId": 4, "auditTx": "0x..." },
+  "estimatedArrivalSeconds": 90
+}
 ```
 
-Returns `{ sessionId, ttlSeconds, maxQueries, price: "0.001 USDC" }`. The agent caches
-this in `.agent-state.json`.
+Tell the user when the funds will arrive on Arbitrum and link the source-chain batch tx + the X Layer audit entry.
 
-### Step 5 — Report to user
-
-> "Opened session `s_abc123` — 1000 queries over 5 min for $0.001 USDC.
-> ETH price now: $3,412.21 (queried 12ms ago)."
-
-## Main Flow — bridge mode
-
-### Step 1 — Quote cross-chain routes
-
-```bash
-onchainos swap quote \
-  --from-chain-index 8453 --to-chain-index 196 \
-  --from-token <USDC-base> --to-token <USDC-xlayer> \
-  --readable-amount 500
-```
-
-### Step 2 — Score candidate routes
-
-Agent's `crosschain/scorer.ts` normalizes `{destApy, bridgeFeeUsd, slippageBps, gasUsd}`
-and picks the highest-scoring.
-
-### Step 3 — Execute the selected route
-
-```bash
-onchainos swap execute \
-  --chain base \
-  --from-chain-index 8453 --to-chain-index 196 \
-  --from-token <USDC-base> --to-token <USDC-xlayer> \
-  --readable-amount 500 --slippage auto --mev-protection
-```
-
-Agent waits for `txStatus == 2` on both sides (source + dest).
-
-### Step 4 — Report to user
-
-> "Bridged 500 USDC Base → X Layer. Route: Stargate (score 87/100). Cost:
-> bridge fee 0.23 USDC, slippage 6 bps, total time 4m22s.
-> Dest tx: https://oklink.com/xlayer/tx/0x..."
-
-## Critical Rules
+## Critical rules
 
 | Rule | Detail |
 |------|--------|
-| **x402 payment is always TEE-signed** — never local-signed for demo |
-| **One session at a time** per asset — reuse before re-paying |
-| **Bridge requires both-side confirmation** — don't mark complete until dest tx landed |
-| **On session expiry** — next `query.ts` call auto-re-opens (transparent to user) |
-| **Score-before-execute** — never pick the first returned route blindly |
+| **One x402 session at a time** — opening a new one invalidates the cached id |
+| **Never log the sessionId** — agent stores it in `.agent-state.json` (gitignored) |
+| **Bridge passes through the firewall** — it's a multi-step batch (approve + bridge), not a free pass |
+| **Idempotent x402 retry** — if `target=x402` 5xx's, retry once; never double-pay |
 
-## Error Reference
+## Error reference
 
 | Condition | Cause | Fix |
 |-----------|-------|-----|
-| `HTTP 402 on every replay` | Mock server down | Start `pnpm agent:mock-x402` |
-| `authorization expired` | Re-paid too late | Session cache must validate `validBefore` |
-| `chain not supported for swap` | Asset/chain pair invalid | Check `onchainos wallet chains` |
-| `route score all < 0` | No profitable path | Report to user; bridge aborted |
-
-## Cross-Skill Workflows
-
-### A. Fund → Execute
-```
-1. zetta-stream-fund    (target=bridge)   → 500 USDC now on X Layer
-2. zetta-stream-action  (deposit to Aave) → Aave position opened
-```
-
-### B. Fund → Monitor
-```
-1. zetta-stream-fund    (target=x402)     → session open
-2. zetta-stream-monitor (use sessionId)   → cheap continuous polling
-```
+| `HTTP 402 with no x402 metadata` | Mock server unreachable | Start with `pnpm agent:mock-x402` |
+| `bridge verdict=REJECTED` | Source-chain bridge spender not allowlisted on Delegate | `setAllowed` from factory |
+| `sessionId expired immediately` | Clock skew between agent host and mock server | NTP-sync, then retry |
+| `bridge stuck > 10 min` | Cross-chain message in flight | Show estimated arrival; agent rotates after arrival |

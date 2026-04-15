@@ -1,65 +1,50 @@
 ---
 name: zetta-stream-action
-description: "Use this skill when the user wants ZettaStream to EXECUTE a multi-step on-chain intent as ONE batched transaction — after parsing the natural language into structured steps, simulating them in TEE, risk-scanning each call via okx-security, and finally broadcasting via EIP-7702 batch (with a Multicall fallback on X Layer) — and then logging the verdict to ZettaStreamLog on X Layer. Triggers: 'execute my intent', 'run intent now', 'batch these calls', 'swap X for Y and stake it', 'upgrade my EOA and run', 'do this for me safely', 'approve and deposit in one tx', 'bundle these operations', 'run my plan'. Every approved path goes through okx-security tx-scan + okx-agentic-wallet TEE signing. Requires SILENT_MODE=true to add --force automatically. Do NOT use to just preview or score an intent — use zetta-stream-analyze. Do NOT use to bridge funds in — use zetta-stream-fund. Do NOT use to set up a watcher — use zetta-stream-monitor."
+description: "Use this skill when the user wants Zetta-Stream to EXECUTE one yield rotation NOW between Aave V3 and Uniswap V4 — pulling the latest x402 yield signal, scoring net APY (after IL + gas), composing the multi-step batch (withdraw → swap → supply / mint-LP), running it through the TEE intent firewall, broadcasting via EIP-7702 on Arbitrum (with Multicall fallback), and writing the audit entry to ZettaStreamLog on X Layer (plus a Medal mint if profitable). Triggers: 'rotate now', 'execute the rotation', 'flip to Aave', 'flip to UniV4', 'rebalance my stream', 'shuffle funds', 'move my position', 'one-shot rotation'. Sets force=true so dwell/cooldown gates are skipped (the user asked explicitly), but the firewall is NEVER skipped. Do NOT use to preview without executing — use zetta-stream-analyze. Do NOT use to fund/bridge in — use zetta-stream-fund. Do NOT use to start the autonomous loop — use zetta-stream-monitor."
 license: MIT
 metadata:
   author: zetta-stream
   version: "0.1.0"
 ---
 
-# ZettaStream Action — Parse, simulate, batch-execute, audit
+# Zetta-Stream Action — Execute one rotation now
 
-The core autonomous action. Takes a structured intent (produced by Claude from the
-user's NL), runs it through the firewall pipeline, and — only if APPROVED — executes
-as one atomic batch on X Layer. Every verdict (approved, rejected, executed) lands on
-`ZettaStreamLog` on X Layer.
+Forces a rotation tick **now**, regardless of dwell/cooldown gates. The pipeline is
+identical to the autonomous loop's but `force=true` short-circuits the timing gates.
+The firewall, signal verification, and on-chain audit are unchanged.
 
 ## Architecture
 
 ```
-Claude parses NL → IntentJSON
+Claude parses NL → RotateRequest
          ↓
-   POST /intent to agent (:7777)
+   POST /rotate to agent (:7777)
          ↓
-   planner.ts         → Call[] with encoded calldata
+   queryYieldFeed()        → x402 session (cached sessionId)
          ↓
-   simulator.ts       → viem eth_call + stateOverride, per-step state diffs
+   scoreAndGate(force=true) → Decision { target, netBps, confidence, reason }
+         ↓ (if target == HOLD with force=true → still surface; do NOT execute)
+   intent-builder           → Call[] (4-6 steps: withdraw + approve + swap + supply/mint)
          ↓
-   risk-scan.ts       → okx-security tx-scan (per call) + dapp-scan (per spender)
+   firewall.run             → planner → simulator → risk-scan → verdict
+         ↓ APPROVED
+   batch-executor           → EIP-7702 on Arbitrum (Multicall fallback if probe fails)
          ↓
-   verdict.ts         → APPROVED | REJECTED | WARN with confidence 0-100
-         ↓
-   ┌─────────┴─────────┐
-   │ APPROVED          │ REJECTED
-   ▼                   ▼
-batch-executor.ts   ZettaStreamLog.logIntent(REJECTED)
-(7702 → Multicall)        │
-   │                      ▼
-   ▼                 done (no execute tx)
-ZettaStreamLog.logIntent(EXECUTED)
-ZettaStreamLog.logDelegation(mode=7702|Multicall)
+   ZettaStreamLog.logRotation(...)        on X Layer
+         ↓ if netYieldBps > 0
+   ZettaStreamMedal.mintTo(rotationId,…)  on X Layer
 ```
 
-## Input schema (what Claude must produce)
+## Input schema
 
 ```json
 {
-  "kind": "BATCH" | "SWAP" | "STAKE" | "BRIDGE" | "APPROVE" | "WITHDRAW" | "LEND" | "MINT",
   "owner": "0x<EOA>",
-  "steps": [
-    {
-      "op": "APPROVE" | "SWAP" | "DEPOSIT" | "WITHDRAW" | "BRIDGE" | "STAKE" | "MINT" | "RAW",
-      "chainId": 196,
-      "token": "0x<addr>"          // optional, for token ops
-      "to": "0x<addr>"             // optional, for raw/approve/deposit targets
-      "amount": "human"            // optional, human-readable like "0.1" or "100"
-      "spender": "0x<addr>"        // required for APPROVE
-      "params": { ... }            // op-specific (tickLower/tickUpper for STAKE etc.)
-    }
-  ],
+  "force": true,
   "options": {
-    "force_fallback": false,       // force Multicall path even if 7702 available
-    "tag": "[DEMO]"                // reason prefix for auditing
+    "force_fallback": false,   // force Multicall path even if 7702 available
+    "tag": "[DEMO]",           // reason prefix written into the audit entry
+    "minNetBps": 0             // override YIELD_MIN_SPREAD_BPS for this single call
   }
 }
 ```
@@ -67,126 +52,130 @@ ZettaStreamLog.logDelegation(mode=7702|Multicall)
 ## Prerequisites
 
 1. Wallet logged in (`onchainos wallet status` shows `loggedIn: true`)
-2. `ZETTA_STREAM_LOG_ADDRESS` set (ran `pnpm contracts:deploy:log`)
-3. `BATCH_CALL_DELEGATE_ADDRESS` set (ran `pnpm contracts:deploy:delegate`)
-4. `DEMO_EOA_PRIVATE_KEY` + `DEMO_EOA_ADDRESS` set (for EIP-7702 signing)
-5. Owner address in `steps[].owner` has called `authorizeAgent(<TEE-EVM>)` on `ZettaStreamLog`
-6. `SILENT_MODE=true` in `.env`
+2. `ZETTA_STREAM_LOG_ADDRESS` set on X Layer
+3. `ZETTA_STREAM_DELEGATE_ADDRESS` set on Arbitrum
+4. `ZETTA_STREAM_MEDAL_ADDRESS` set on X Layer
+5. `DEMO_EOA_ADDRESS` has called `authorizeAgent(<TEE-EVM>)` on `ZettaStreamLog`
+6. Open x402 session (run `zetta-stream-fund target=x402` first if `state.x402.sessionId` is empty)
+7. `SILENT_MODE=true` in `.env`
 
 ## Command Index
 
 | # | Command | Purpose |
 |---|---|---|
-| 1 | `POST http://localhost:7777/intent` | Submit structured intent to agent |
-| 2 | `onchainos security tx-scan` | Per-step risk check (agent-internal) |
-| 3 | `onchainos security dapp-scan` | Spender check for APPROVE ops |
-| 4 | `onchainos swap quote` | Route + calldata for SWAP steps |
-| 5 | `onchainos wallet contract-call --force` | TEE-sign each inner call |
-| 6 | `onchainos wallet contract-call` | Write ZettaStreamLog audit entry |
+| 1 | `POST http://localhost:7777/rotate` | Force one rotation tick |
+| 2 | `onchainos security tx-scan` | Per-call risk check (agent-internal) |
+| 3 | `onchainos swap quote` | USDC ↔ token leg (only when needed by intent-builder) |
+| 4 | `onchainos wallet contract-call --force` | TEE-sign each inner call (Aave / UniV4) |
+| 5 | `onchainos wallet contract-call` | Write `logRotation` on X Layer |
+| 6 | `onchainos wallet contract-call` | Mint `ZettaStreamMedal` (if netYieldBps > 0) |
 
-## Main Flow
+## Main flow
 
-### Step 1 — Parse NL into IntentJSON
+### Step 1 — Build the request
 
-Analyze the user's message. Extract the operation kind, tokens, amounts, and
-destinations. Produce an `IntentJSON` object that conforms to the schema above.
+The user's NL maps to a single `RotateRequest`. Examples:
 
-**Example mappings:**
-
-| User says | IntentJSON |
+| User says | RotateRequest |
 |---|---|
-| "swap 0.1 OKB to USDC then stake USDC in test vault" | `{kind:"BATCH", steps:[{op:"SWAP",token:"OKB",amount:"0.1",to:"USDC"},{op:"APPROVE",token:"USDC",spender:"<vault>"},{op:"STAKE",to:"<vault>",token:"USDC"}]}` |
-| "approve 100 USDC to 0xBadC0ffee and deposit" | `{kind:"BATCH", steps:[{op:"APPROVE",token:"USDC",amount:"100",spender:"0xBadC0ffee"},{op:"DEPOSIT",to:"0xBadC0ffee",token:"USDC",amount:"100"}]}` |
-| "bridge 500 USDC from X Layer to Base Aave deposit" | `{kind:"BATCH", steps:[{op:"BRIDGE",token:"USDC",amount:"500",chainId:196,params:{dstChainId:8453}},{op:"APPROVE",token:"USDC",chainId:8453,spender:"<aave>"},{op:"DEPOSIT",to:"<aave>",token:"USDC",chainId:8453}]}` |
+| "rotate now" | `{owner:"0x…", force:true}` |
+| "flip to UniV4 now" | `{owner:"0x…", force:true, options:{tag:"[FORCE-UNIV4]"}}` |
+| "rebalance, ignore the cooldown" | `{owner:"0x…", force:true}` |
 
-### Step 2 — POST /intent
+### Step 2 — POST /rotate
 
 ```bash
-curl -X POST http://localhost:7777/intent \
+curl -X POST http://localhost:7777/rotate \
   -H 'Content-Type: application/json' \
-  -d '{"kind":"BATCH","owner":"0x...","steps":[...]}'
+  -d '{"owner":"0x...","force":true}'
 ```
 
 Response:
 
 ```json
 {
-  "intentHash": "0xabc...",
-  "verdict": "APPROVED" | "REJECTED",
-  "confidence": 92,
-  "reason": "all checks clean",
-  "plan": { "callCount": 3, "mode": "EIP7702|Multicall" },
-  "txHashes": ["0x..."] ,          // present when verdict=EXECUTED
-  "auditTx": "0x..."               // X Layer tx of logIntent
+  "decision": {
+    "target": "UNIV4" | "AAVE" | "HOLD",
+    "netYieldBps": 85,
+    "confidence": 73,
+    "reason": "uni fee apr +110bps after IL"
+  },
+  "verdict": "APPROVED" | "REJECTED" | "HOLD",
+  "exec": {
+    "mode": "EIP7702" | "MULTICALL_FALLBACK",
+    "batchTxHash": "0x..." ,
+    "callCount": 5,
+    "gasSavedBps": 42
+  },
+  "audit": { "rotationId": 17, "auditTx": "0x..." },
+  "medal": { "tokenId": 9, "mintTx": "0x..." }   // optional, only if netYieldBps > 0
 }
 ```
 
-### Step 3 — Present verdict
+### Step 3 — Present the result
 
-If `verdict === "REJECTED"`, summarize the reason conversationally. Point the user to
-the X Layer audit entry:
-`https://www.oklink.com/xlayer/tx/<auditTx>` and offer to run `zetta-stream-analyze`
-with a different target if they want to try a safer variant.
+If `verdict === "HOLD"`: explain that the scorer found no profitable rotation right
+now, and quote the `decision.netYieldBps` so the user knows the magnitude.
 
-If `verdict === "APPROVED"` and execution succeeded, show:
+If `verdict === "REJECTED"`: summarize the firewall reason. Common cases: target not on
+the Delegate allowlist (config issue), or simulator reverted (insufficient balance,
+slippage). Point at the X Layer audit entry.
 
-- The single batched tx hash
-- The mode used (EIP-7702 or Multicall fallback)
-- Gas saved percentage (gasSaved / baseline ratio)
-- The audit entry link
+If `verdict === "APPROVED"` and execution succeeded:
+- Batch tx on Arbitrum: `https://arbiscan.io/tx/<exec.batchTxHash>`
+- Audit entry on X Layer: `https://www.oklink.com/xlayer/tx/<audit.auditTx>`
+- (If minted) Medal NFT on X Layer: `https://www.oklink.com/xlayer/tx/<medal.mintTx>`
+- Mode badge (`EIP-7702` is the headline; `Multicall fallback` is fine but call it out)
+- `gasSavedBps` rendered as a percentage of notional
 
 ### Step 4 — Confirm audit landed
 
-The agent writes `ZettaStreamLog.logIntent(...)` last. Verify via:
-
 ```bash
-curl http://localhost:7777/verdict/<intentHash>
+curl http://localhost:7777/state | jq '.rotation'
 ```
 
-Response shows the chain state matches the agent's self-reported result.
+The reported `lastRotatedAt` and `rotationCount` should reflect the new entry.
 
-## Critical Rules
+## Critical rules
 
 | Rule | Detail |
 |------|--------|
-| **Never skip simulation** — even dry-run commands go through simulator.ts |
-| **Never skip tx-scan** — a failed scan is a hard REJECT, no "best-effort" |
-| **One batch per intent** — if the intent needs >8 steps, split into multiple intents |
-| **--force required** — after `SILENT_MODE=true`, OR the CLI will prompt and break flow |
-| **Log entry is the last step** — audit reflects what actually happened, not what was planned |
-| **On 7702 probe fail** — silently degrade to Multicall path; don't error out |
+| **Never skip the firewall** — `force` skips dwell/cooldown only, never the simulator + risk-scan |
+| **Never sign EIP-7702 from a user-controlled key** — only `DEMO_EOA_PRIVATE_KEY` |
+| **One batch per rotation** — intent-builder caps at 6 inner calls; if the route needs more, surface as REJECTED |
+| **`--force` required** — after `SILENT_MODE=true`, or the CLI will prompt and break flow |
+| **Log entry is last** — write `logRotation` after the batch; on failure, audit reflects the actual state |
+| **Medal only on profit** — never mint if `netYieldBps <= 0`; the contract enforces this too |
 
-## Error Reference
+## Error reference
 
 | Condition | Cause | Fix |
 |-----------|-------|-----|
-| `verdict=REJECTED, reason="block: ..."` | okx-security flagged a call | Expected for phishing scenario; don't retry |
-| `verdict=REJECTED, reason="sim revert at step N: ..."` | Plan is infeasible (insufficient balance / wrong ABI) | Re-check `steps[]` encoding; verify token balances |
-| `verdict=WARN` | scan warn + sim OK | Surface to user; ask for explicit go-ahead |
-| `mode=Multicall` unexpectedly | Pectra probe failed on X Layer | Expected until X Layer upgrades; README discloses |
-| `HTTP 402` from agent | (shouldn't happen on /intent) | Report; paths are not payment-gated here |
-| `confirming:true` from CLI | SILENT_MODE not set | Set `SILENT_MODE=true` in `.env` |
-| `tx status != 2` | X Layer broadcast failed | Check gas / nonce; agent retries once |
+| `verdict=REJECTED, reason="target not allowed"` | Aave/UniV4 spender not in Delegate allowlist | Run `setAllowed(<addr>, true)` from factory key |
+| `verdict=REJECTED, reason="sim revert at step N"` | Slippage / balance / approval missing | Re-fund position; check `state.balances` |
+| `mode=MULTICALL_FALLBACK` unexpectedly | Pectra probe failed on Arbitrum | Set `FORCE_7702=true` to re-probe; check viem version ≥ 2.21 |
+| `medal absent on profit` | Medal contract not deployed or owner mismatch | Verify `ZETTA_STREAM_MEDAL_ADDRESS` and that owner == agent EOA |
+| `HTTP 402 from /rotate` | x402 session expired mid-flight | Run `zetta-stream-fund target=x402` to refresh session |
 
-## Cross-Skill Workflows
+## Cross-skill workflows
 
 ### A. Preview then execute
-> "analyze this intent — if safe, run it"
+> "analyze this rotation; if safe, run it"
 ```
-1. zetta-stream-analyze  → score + highlights risks
-2. zetta-stream-action   → actually execute (same IntentJSON)
-```
-
-### B. Funded + executed in one user message
-> "deposit 100 USDC from Base to X Layer Aave"
-```
-1. zetta-stream-fund     → bridge Base→XLayer
-2. zetta-stream-action   → approve + supply on Aave/XLayer
+1. zetta-stream-analyze  → score + show firewall findings
+2. zetta-stream-action   → execute now
 ```
 
-### C. Monitored + fired
-> "when ETH drops below $3,400 run scenario X"
+### B. Fund + execute in one message
+> "open x402 and rotate"
 ```
-1. zetta-stream-monitor  → register condition + then_intent
-2. (later, triggered) → zetta-stream-action auto-invoked by monitor
+1. zetta-stream-fund     → opens x402 session
+2. zetta-stream-action   → executes one rotation
+```
+
+### C. Manual override during autonomous loop
+> "stop monitoring and rotate one final time"
+```
+1. zetta-stream-monitor stop  → halts the autonomous loop
+2. zetta-stream-action        → final manual rotation
 ```

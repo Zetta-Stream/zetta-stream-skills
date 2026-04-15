@@ -1,148 +1,136 @@
 ---
 name: zetta-stream-monitor
-description: "Use this skill when the user wants ZettaStream to run as a 24/7 AUTONOMOUS agent — watching a condition (price crossing, balance threshold, time window) and firing a pre-defined intent automatically when the trigger fires. Under the hood it polls an x402 reusable session every 500ms (opened once via zetta-stream-fund) and invokes zetta-stream-action when the condition hits. Triggers: 'start monitoring', 'watch for opportunities', 'run the agent 24/7', 'auto-execute when ETH drops below 3400', 'keep firewall live', 'tail the intent queue', 'watch price and act', 'auto-trade when condition', 'set up a trigger'. Do NOT use to execute an intent once — use zetta-stream-action. Do NOT use to preview — use zetta-stream-analyze. Do NOT use to open a session/bridge funds — use zetta-stream-fund first."
+description: "Use this skill when the user wants Zetta-Stream's AUTONOMOUS LOOP started or stopped — a recurring tick that pulls a fresh x402 yield signal, scores it, and (if dwell + cooldown + confidence + spread gates all pass) executes a real Aave↔UniV4 rotation through the EIP-7702 batch executor + TEE firewall, logs to ZettaStreamLog on X Layer, and mints a Medal NFT on profitable rotations. Triggers: 'start the autonomous stream', 'turn on zetta', 'begin monitoring yield', 'auto-rotate for the next 24h', 'stop the stream', 'pause monitoring', 'turn zetta off'. The loop runs server-side until stopped. Do NOT use to execute one rotation immediately — use zetta-stream-action. Do NOT use to preview without executing — use zetta-stream-analyze."
 license: MIT
 metadata:
   author: zetta-stream
   version: "0.1.0"
 ---
 
-# ZettaStream Monitor — 24/7 autonomous watcher
+# Zetta-Stream Monitor — Start / stop the autonomous rotation loop
 
-Registers a `(condition, then_intent)` pair with the agent. The agent polls price /
-balance / time signals via the x402 session at 500ms cadence. When the condition
-fires, the agent auto-invokes `zetta-stream-action` with the pre-defined `then_intent` —
-no human in the loop.
+Drives the agent's `monitor/loop.ts` heartbeat. While running, every `POLL_INTERVAL_MS`
+the loop fetches a fresh x402 signal, scores it, and rotates the position **if and
+only if** all four gates pass:
+
+1. `net_bps >= YIELD_MIN_SPREAD_BPS`
+2. `now - state.rotation.lastRotatedAt >= COOLDOWN_SECONDS`
+3. Same `decision.target` for `DWELL_SECONDS` across ≥3 consecutive ticks
+4. `signal.confidence >= MIN_CONFIDENCE_APPROVE`
+
+This skill is the most "live" surface judges see: the dashboard's SSE stream lights up
+with `signal → decision → firewall → exec → audit → medal` events as the loop ticks.
 
 ## Architecture
 
 ```
-zetta-stream-fund (:4402 session open, $0.001 paid)
-         ↓
-POST /monitor/register (:7777)
-         ↓
-monitor/loop.ts  — every 500ms:
-   ├─ query.ts → GET :4402/price/:symbol?session=sid  (<100ms)
-   ├─ evaluate condition
-   └─ if fired:
-        ├─ call /intent with then_intent → full firewall pipeline
-        ├─ log trigger-fire event to SSE /sse
-        └─ auto-unregister (unless repeat=true)
+POST /monitor/start             POST /monitor/stop
+   ↓                                  ↓
+state.monitorRunning = true       state.monitorRunning = false
+   ↓                                  ↓
+loop.ts heartbeat (every POLL_INTERVAL_MS):
+
+  signal      = queryYieldFeed()                       (x402 session)
+  decision    = scoreAndGate(signal, state)
+  if decision.target == HOLD or gates fail → emit, return
+  intent      = intent-builder(decision)
+  report      = firewall.run(intent)
+  if !APPROVED → log skip, emit, return
+  exec        = batch-executor(report.calls)           (7702 / Multicall)
+  audit       = logRotation on X Layer
+  if exec.netYieldBps > 0 → mint Medal on X Layer
+  emit SSE: tick.complete
 ```
 
 ## Input schema
 
 ```json
+// Start
 {
-  "condition": {
-    "symbol": "ETH" | "BTC" | "OKB" | "<any-token>",
-    "op": "<" | ">" | "==",
-    "value": 3400,
-    "source": "x402_session" | "okx_market"   // default "x402_session"
-  },
-  "then_intent": {
-    "kind": "BATCH",
-    "owner": "0x...",
-    "steps": [ ... ]
-  },
-  "options": {
-    "repeat": false,                   // re-arm after fire? default false
-    "max_fires": 1,                    // hard cap
-    "expires_at_unix": 1772236800,     // auto-stop deadline
-    "cooldown_seconds": 60             // min gap between fires if repeat=true
-  }
+  "owner": "0x<EOA>",
+  "durationSeconds": 600
 }
+
+// Stop
+{ "owner": "0x<EOA>" }
 ```
 
 ## Prerequisites
 
-1. Wallet logged in + `SILENT_MODE=true` (so auto-exec doesn't prompt)
-2. x402 session already open — run `zetta-stream-fund` first (`target=x402`)
-3. Owner in `then_intent.owner` has called `authorizeAgent(...)` on ZettaStreamLog
+- Same as `zetta-stream-action` (deployed contracts, authorized agent, x402 session)
+- `POLL_INTERVAL_MS` set (default 15000 ms)
 
 ## Command Index
 
 | # | Command | Purpose |
 |---|---|---|
-| 1 | `POST :7777/monitor/register` | Register a condition + then_intent |
-| 2 | `GET :7777/monitor/list` | List active watchers |
-| 3 | `DELETE :7777/monitor/:id` | Cancel a watcher |
-| 4 | `GET :7777/sse` | Stream live events (polls, fires, verdicts) |
+| 1 | `POST http://localhost:7777/monitor/start` | Start the autonomous loop |
+| 2 | `POST http://localhost:7777/monitor/stop`  | Stop it |
+| 3 | `GET  http://localhost:7777/sse`           | Live event stream (per tick) |
+| 4 | `GET  http://localhost:7777/state`         | Snapshot of `state.rotation` + `monitorRunning` |
 
-## Main Flow
-
-### Step 1 — Register
+## Main flow — start
 
 ```bash
-curl -X POST :7777/monitor/register \
-  -d '{
-    "condition": {"symbol":"ETH","op":"<","value":3400},
-    "then_intent": { "kind":"BATCH", "owner":"0x...", "steps":[
-        { "op":"BRIDGE","token":"USDC","amount":"500","chainId":196,
-          "params":{"dstChainId":8453} },
-        { "op":"APPROVE","token":"USDC","chainId":8453,"spender":"<aave>"},
-        { "op":"DEPOSIT","to":"<aave>","token":"USDC","chainId":8453 }
-    ]},
-    "options": {"repeat":false, "max_fires":1, "cooldown_seconds":60}
-  }'
+curl -X POST http://localhost:7777/monitor/start \
+  -H 'Content-Type: application/json' \
+  -d '{"owner":"0x...","durationSeconds":600}'
 ```
 
-Response: `{ id: "w_xyz789", status: "active", created_at, expires_at }`
+Response:
 
-### Step 2 — Stream events
+```json
+{
+  "watcherId": "watcher_abc",
+  "startedAt": 1744660800,
+  "tickIntervalMs": 15000,
+  "sseUrl": "http://localhost:7777/sse"
+}
+```
+
+Tell the user:
+- The loop is running (with auto-stop time, if any)
+- The dashboard URL where they can watch ticks: `http://localhost:3000`
+- That stopping is one message away
+
+## Main flow — stop
 
 ```bash
-curl -N :7777/sse
-# event: poll  data: { symbol:"ETH", price:3412, t:... }
-# event: fire  data: { id:"w_xyz789", intentHash:"0x...", auditTx:"0x..." }
+curl -X POST http://localhost:7777/monitor/stop \
+  -H 'Content-Type: application/json' \
+  -d '{"owner":"0x..."}'
 ```
 
-### Step 3 — Report back to user
+Response:
 
-Once the fire event arrives:
+```json
+{
+  "stoppedAt": 1744661400,
+  "ticksRun": 40,
+  "rotationsExecuted": 3,
+  "totalNetYieldBps": 215,
+  "medalsMinted": 2
+}
+```
 
-> "Condition hit — ETH touched $3,399.82. Fired the X Layer→Base Aave batch.
->   Verdict: APPROVED (confidence 91). X Layer batch tx: 0x...
->   Base Aave deposit tx: 0x...
->   Audit trail: https://oklink.com/xlayer/tx/<auditTx>"
+Show the user a tight summary: # of ticks, # of executed rotations, cumulative net
+yield in bps, # of medals minted, link to the audit page filtered by this owner.
 
-## Demo-mode helpers (DEMO_MODE=true)
-
-- `POST /api/debug/fake-price` — inject a synthetic price for instant trigger
-- `POST /api/debug/replay-scenario` — replay one of the 3 demo scenarios
-
-## Critical Rules
+## Critical rules
 
 | Rule | Detail |
 |------|--------|
-| **Always fund an x402 session first** — or monitor falls back to okx_market (costs more) |
-| **cooldown_seconds required with repeat** — prevents fire-storm on noisy prices |
-| **All fires go through the full firewall** — REJECTED fires still audit, no shortcut |
-| **Max 10 active watchers** — safety cap; agent refuses to register #11 |
-| **Session expiry handled automatically** — transparent re-open |
+| **One watcher per owner** — starting twice is idempotent (returns existing watcherId) |
+| **Stop is graceful** — finishes the in-flight tick before exiting |
+| **Cooldown is a hard gate** — even when monitor is running, no rotation within `COOLDOWN_SECONDS` of the last |
+| **Dwell prevents flip-flop** — needs 3 consecutive ticks pointing at the same target to fire |
+| **Auto-stop on consecutive failure** — 3 firewall REJECTs in a row pause the loop and surface to the user |
 
-## Error Reference
+## Error reference
 
 | Condition | Cause | Fix |
 |-----------|-------|-----|
-| `409 no x402 session` | Forgot to run zetta-stream-fund | Run `zetta-stream-fund target=x402` |
-| `422 owner not authorized` | EOA hasn't called authorizeAgent | Call `authorizeAgent(<TEE-EVM>)` on ZettaStreamLog |
-| `429 max watchers` | >10 active | Cancel stale ones via DELETE |
-| `ECONNREFUSED :4402` | Mock x402 server down | Start `pnpm agent:mock-x402` |
-
-## Cross-Skill Workflows
-
-### A. The classic autonomous trade
-```
-1. zetta-stream-fund     (x402 session)      → queries cost $0.001 / 1000
-2. zetta-stream-fund     (bridge if needed)  → capital in place
-3. zetta-stream-monitor  (register trigger)  → watcher active
-4. (wait)             → condition fires
-5. (auto)             → zetta-stream-action fires the then_intent → audit on X Layer
-```
-
-### B. Early-exit monitoring
-```
-1. zetta-stream-monitor (with cancel-on-fire) → watches once
-2. DELETE /monitor/:id                     → cancel manually
-```
+| `watcher already running` | Started twice | Idempotent — agent returns existing watcherId |
+| `loop paused after 3 rejects` | Persistent firewall block (config / allowlist) | Investigate `state.lastReject` then `monitor/start` again |
+| `signal.confidence stuck < threshold` | Mock server set bad fixtures | Use `/debug/set-yield/confidence/80` to unblock the demo |
+| `medalsMinted=0 but rotations>0` | All rotations were rebalances at zero or negative net | Expected; only profitable rotations mint |

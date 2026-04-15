@@ -1,142 +1,124 @@
 ---
 name: zetta-stream-analyze
-description: "Use this skill when the user wants to PREVIEW or SCORE an on-chain intent WITHOUT executing it — run a read-only simulation against current state, pass each call through okx-security tx-scan and dapp-scan, and return a verdict (APPROVED / REJECTED / WARN) with a confidence score 0-100, a state-diff breakdown, and a risk findings list. Triggers: 'is this intent safe', 'simulate this transaction', 'preview this swap', 'check for phishing', 'score this route', 'would this rug me', 'dry-run my plan', 'what would happen if I ran this', 'analyze before executing'. This skill NEVER broadcasts — it only reads. Use zetta-stream-action to actually execute an approved plan. Use zetta-stream-monitor to register conditional auto-execution. Use zetta-stream-fund for funding/bridging."
+description: "Use this skill when the user wants to PREVIEW a yield rotation without executing — pull the latest x402 signal, run the deterministic scorer, build the rotation intent, and dry-run it through the TEE intent firewall (planner + simulator + risk-scan + verdict) so the user can see decision + findings + projected net APY before deciding to execute. Triggers: 'preview the yield stream', 'should I rotate now?', 'score the current signal', 'dry-run a rotation', 'what would the agent do?', 'is rotating safe right now?', 'show me the verdict'. Read-only — never broadcasts. Do NOT use to actually rotate — use zetta-stream-action. Do NOT use to bridge funds in — use zetta-stream-fund."
 license: MIT
 metadata:
   author: zetta-stream
   version: "0.1.0"
 ---
 
-# ZettaStream Analyze — Read-only firewall diagnostic
+# Zetta-Stream Analyze — Score + dry-run, no execution
 
-Answers "what would happen if I ran this?" — without touching mainnet state.
+Read-only preview of what `zetta-stream-action` *would* do right now. Same pipeline,
+but stops before the batch broadcast. Useful for:
+
+- Sanity-checking the autonomous agent before turning it loose
+- Hand-tuning the decision thresholds (`YIELD_MIN_SPREAD_BPS`, `MIN_CONFIDENCE_APPROVE`)
+- Demoing the firewall to judges without spending gas
 
 ## Architecture
 
 ```
-IntentJSON (from Claude)
-      ↓
-POST /analyze (agent :7777)
-      ↓
-planner.ts         → Call[] (same path as zetta-stream-action)
-      ↓
-simulator.ts       → eth_call + stateOverride; per-step state diffs
-      ↓
-risk-scan.ts       → okx-security tx-scan / dapp-scan (no signing)
-      ↓
-verdict.ts         → { verdict, confidence, reason, findings[] }
-      ↓
-Response to caller (NO on-chain write)
+Claude parses NL → AnalyzeRequest
+         ↓
+   POST /analyze (:7777)
+         ↓
+   queryYieldFeed()           → x402 session cached
+         ↓
+   scoreAndGate(preview=true) → Decision { target, netBps, confidence, reason }
+         ↓
+   intent-builder             → Call[] (no broadcast)
+         ↓
+   firewall.run(dry=true)     → planner → simulator → risk-scan → verdict
+         ↓
+   ── return JSON, no tx, no audit, no medal ──
 ```
 
 ## Input schema
 
-Same as `zetta-stream-action` but with optional `options.dry_run: true` (implied).
-
 ```json
 {
-  "kind": "BATCH" | "SWAP" | ...,
   "owner": "0x<EOA>",
-  "steps": [ ... ]
+  "options": {
+    "withFindings": true,
+    "withSim": true,
+    "tag": "[PREVIEW]"
+  }
 }
 ```
-
-## Prerequisites
-
-1. Wallet logged in
-2. X Layer RPC reachable (`XLAYER_RPC_URL` set)
-3. (optional) `okx-security` reachable for per-call scan
 
 ## Command Index
 
 | # | Command | Purpose |
 |---|---|---|
-| 1 | `POST http://localhost:7777/analyze` | Submit IntentJSON, get verdict + findings |
-| 2 | `onchainos security tx-scan` | Per-call scan (agent-internal) |
-| 3 | `onchainos security dapp-scan` | Spender scan for APPROVE steps (agent-internal) |
-| 4 | `onchainos swap quote` | Quote for SWAP steps (plan-time) |
+| 1 | `POST http://localhost:7777/analyze` | Run scorer + firewall preview |
+| 2 | `GET  http://localhost:7777/state`   | Check current position + state.rotation |
 
-## Main Flow
+## Main flow
 
-### Step 1 — Parse NL into IntentJSON (same as zetta-stream-action)
-
-### Step 2 — POST /analyze
+### Step 1 — POST /analyze
 
 ```bash
 curl -X POST http://localhost:7777/analyze \
   -H 'Content-Type: application/json' \
-  -d '{"kind":"BATCH","owner":"0x...","steps":[...]}'
+  -d '{"owner":"0x..."}'
 ```
 
 Response:
 
 ```json
 {
-  "intentHash": "0xabc...",
-  "verdict": "APPROVED" | "REJECTED" | "WARN",
-  "confidence": 92,
-  "reason": "all checks clean",
-  "findings": [
-    {"level": "info", "step": 0, "type": "sim_ok", "message": "swap returns 187.32 USDC"},
-    {"level": "warn", "step": 1, "type": "dapp_scan", "message": "spender 0x... is new (no reputation yet)"}
-  ],
-  "stateDiff": [
-    {"step": 0, "address": "0x<EOA>", "before": {"USDC": 0}, "after": {"USDC": 187320000}},
-    ...
-  ],
-  "baseline": { "independentTxGas": 213500 },
-  "estimated": { "batchTxGas": 92400, "gasSavedPct": 56.7 }
+  "signal": {
+    "aavePoolApy": 0.031,
+    "uniFeeApr": 0.042,
+    "ilRisk": 0.18,
+    "confidence": 73,
+    "ts": 1744660800
+  },
+  "decision": {
+    "target": "UNIV4" | "AAVE" | "HOLD",
+    "currentPosition": "AAVE",
+    "grossSpreadBps": 110,
+    "ilPenaltyBps": 72,
+    "gasCostBps": 25,
+    "netYieldBps": 85,
+    "confidence": 73,
+    "reason": "uni fee apr +110bps after IL",
+    "score": 92
+  },
+  "firewall": {
+    "verdict": "APPROVED" | "REJECTED" | "WARN",
+    "callCount": 5,
+    "findings": [{ "step": 2, "level": "WARN", "msg": "..." }]
+  }
 }
 ```
 
-### Step 3 — Explain the verdict to the user
+### Step 2 — Present a recommendation
 
-Translate `findings` into plain language. Highlight any WARN or BLOCK items with
-OKLink / Etherscan links for the offending contracts.
+Lead with the verdict + headline number. Examples:
 
-For REJECTED phishing: show the chain of events that would have drained their balance
-(read `stateDiff` to construct the story). Say what a safer variant would look like.
+- **APPROVED, target=UNIV4, netBps=85**: "Looks good — projected +85bps net after IL and gas. The firewall cleared all 5 calls. Want me to execute? (`zetta-stream-action`)"
+- **HOLD, netBps=12**: "Below the 30bps threshold. Hold the current Aave position. I'll keep watching."
+- **REJECTED**: explain the finding (e.g. "sim revert at step 3 — insufficient USDC balance"). Suggest a fix (fund via `zetta-stream-fund`).
 
-## Risk scoring (verdict.ts decision table)
+### Step 3 — Optional drill-down
 
-| tx-scan | sim result | verdict | confidence |
-|---|---|---|---|
-| any `block` | — | **REJECTED** | 95+ |
-| any call reverts | — | **REJECTED** | 90 |
-| any `warn` | sim pass | **WARN** | 60-80 |
-| all `safe` | sim pass | **APPROVED** | 90+ |
-| scan unavailable | sim pass | **WARN** | 50 (reason: "scan unavailable, heuristic fallback") |
+If `withFindings=true` was set, summarize the per-step findings as a short table. Don't dump raw JSON to the user; keep prose.
 
-## Critical Rules
+## Critical rules
 
 | Rule | Detail |
 |------|--------|
-| **No writes ever** — analyze is 100% read-only |
-| **Fresh state every run** — no caching of sim results across calls |
-| **Failures are REJECT** — timeouts / errors bias to REJECT, never to APPROVE |
-| **Findings are typed** — every finding has level ∈ {info,warn,block} + type + message |
+| **Never broadcasts** — endpoint MUST stop before batch-executor |
+| **Never charges x402** — uses cached session; if no session, return `signal=null` and recommend `zetta-stream-fund target=x402` |
+| **Same scorer** — preview and execute share `decision/scorer.ts` so the user can trust the projection |
+| **State unchanged** — `/analyze` does not advance `state.rotation.lastRotatedAt` |
 
-## Error Reference
+## Error reference
 
 | Condition | Cause | Fix |
 |-----------|-------|-----|
-| `sim revert: insufficient balance` | Owner doesn't hold enough | Check wallet balances first |
-| `sim revert: ERC20: approval required` | Sequence missing an APPROVE step | Insert APPROVE before SPEND |
-| `scan 429` | okx-security rate limited | Wait and retry; heuristic fallback kicks in |
-| `quote not available` | OKX DEX has no route for the pair | Try an alternate route via zetta-stream-fund |
-
-## Cross-Skill Workflows
-
-### A. Analyze then execute
-```
-1. zetta-stream-analyze   → verdict + findings
-2. (if APPROVED)
-3. zetta-stream-action    → broadcast
-```
-
-### B. Analyze to compare routes
-```
-1. zetta-stream-analyze for route A   → score A
-2. zetta-stream-analyze for route B   → score B
-3. Pick the higher-scored → zetta-stream-action
-```
+| `signal=null` | No active x402 session | Run `zetta-stream-fund target=x402` |
+| `verdict=REJECTED, reason="target not allowed"` | Aave/UniV4 spender not allowlisted | Add via `setAllowed` from factory |
+| `confidence < MIN_CONFIDENCE_APPROVE` | Signal too noisy | Wait one tick or lower `MIN_CONFIDENCE_APPROVE` for demo |

@@ -33,8 +33,8 @@ export async function signDelegationAuthorization(): Promise<Authorization> {
   if (!account || !walletClient) {
     throw new Error("DEMO_EOA_PRIVATE_KEY not set — cannot sign 7702 authorization");
   }
-  if (!cfg.BATCH_CALL_DELEGATE_ADDRESS) {
-    throw new Error("BATCH_CALL_DELEGATE_ADDRESS not set — deploy contracts first");
+  if (!cfg.ZETTA_STREAM_DELEGATE_ADDRESS) {
+    throw new Error("ZETTA_STREAM_DELEGATE_ADDRESS not set — deploy contracts first");
   }
 
   const publicClient = getPublicClient();
@@ -43,7 +43,7 @@ export async function signDelegationAuthorization(): Promise<Authorization> {
   log.info(
     {
       eoa: account.address,
-      delegate: cfg.BATCH_CALL_DELEGATE_ADDRESS,
+      delegate: cfg.ZETTA_STREAM_DELEGATE_ADDRESS,
       chainId: cfg.XLAYER_CHAIN_ID,
       nonce,
     },
@@ -54,7 +54,7 @@ export async function signDelegationAuthorization(): Promise<Authorization> {
   // Returns a SignedAuthorization object directly consumable by writeContract.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const auth = await (account as any).signAuthorization({
-    contractAddress: cfg.BATCH_CALL_DELEGATE_ADDRESS as `0x${string}`,
+    contractAddress: cfg.ZETTA_STREAM_DELEGATE_ADDRESS as `0x${string}`,
     chainId: cfg.XLAYER_CHAIN_ID,
     nonce,
   });

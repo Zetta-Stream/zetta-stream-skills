@@ -1,183 +1,143 @@
-"use client";
-import { useReadContract } from "wagmi";
-import { zettaStreamLogAbi, VERDICT_LABELS, DELEGATION_MODE_LABELS } from "@/lib/abi";
-import { ZETTA_STREAM_LOG_ADDRESS, OKLINK_ADDRESS, OKLINK_TX } from "@/lib/addresses";
+import { createPublicClient, http } from "viem";
+import { xLayer } from "viem/chains";
+import { zettaStreamLogAbi, POSITION_LABELS, DELEGATION_MODE_LABELS } from "@/lib/abi";
+import { ZETTA_STREAM_LOG_ADDRESS, XLAYER_RPC, OKLINK_ADDRESS, OKLINK_TX } from "@/lib/addresses";
 
-export default function AuditPage() {
-  const addrReady = ZETTA_STREAM_LOG_ADDRESS && ZETTA_STREAM_LOG_ADDRESS.length === 42;
+export const revalidate = 30;
 
-  const { data: count } = useReadContract({
-    abi: zettaStreamLogAbi,
-    address: addrReady ? ZETTA_STREAM_LOG_ADDRESS : undefined,
-    functionName: "entryCount",
-    query: { enabled: addrReady },
-  });
+const client = createPublicClient({ chain: xLayer, transport: http(XLAYER_RPC) });
 
-  const { data: entries } = useReadContract({
-    abi: zettaStreamLogAbi,
-    address: addrReady ? ZETTA_STREAM_LOG_ADDRESS : undefined,
-    functionName: "recent",
-    args: [50n],
-    query: { enabled: addrReady },
-  });
+interface Rotation {
+  timestamp: bigint;
+  owner: `0x${string}`;
+  agent: `0x${string}`;
+  signalHash: `0x${string}`;
+  from: number;
+  to: number;
+  confidence: number;
+  netYieldBps: number;
+  gasSavedBps: number;
+  batchTxHash: `0x${string}`;
+  mode: number;
+  reason: string;
+}
 
-  const { data: delegations } = useReadContract({
-    abi: zettaStreamLogAbi,
-    address: addrReady ? ZETTA_STREAM_LOG_ADDRESS : undefined,
-    functionName: "recentDelegations",
-    args: [20n],
-    query: { enabled: addrReady },
-  });
+async function fetchAll() {
+  if (!ZETTA_STREAM_LOG_ADDRESS) return { count: 0n, rotations: [] as Rotation[] };
+  try {
+    const [count, rotations] = await Promise.all([
+      client.readContract({
+        address: ZETTA_STREAM_LOG_ADDRESS,
+        abi: zettaStreamLogAbi,
+        functionName: "rotationCount",
+      }),
+      client.readContract({
+        address: ZETTA_STREAM_LOG_ADDRESS,
+        abi: zettaStreamLogAbi,
+        functionName: "recent",
+        args: [50n],
+      }) as Promise<Rotation[]>,
+    ]);
+    return { count, rotations };
+  } catch {
+    return { count: 0n, rotations: [] as Rotation[] };
+  }
+}
+
+export default async function AuditPage() {
+  const { count, rotations } = await fetchAll();
+  const addrReady = !!ZETTA_STREAM_LOG_ADDRESS;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-3xl font-semibold">Audit trail</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Rotation ledger</h1>
           <p className="text-sm text-[rgb(var(--muted))] mt-1">
-            Every intent verdict + EIP-7702 delegation written to ZettaStreamLog on X Layer.
+            Every yield rotation Zetta-Stream commits, immutable on X Layer.
           </p>
         </div>
-        <div className="text-xs text-[rgb(var(--muted))]">
+        <div className="text-xs text-[rgb(var(--muted))] font-mono">
           {addrReady ? (
             <>
               Contract:{" "}
               <a
-                className="underline"
+                className="underline text-[rgb(var(--accent))]"
                 href={OKLINK_ADDRESS(ZETTA_STREAM_LOG_ADDRESS)}
                 target="_blank"
                 rel="noreferrer"
               >
-                {ZETTA_STREAM_LOG_ADDRESS}
+                {ZETTA_STREAM_LOG_ADDRESS.slice(0, 8)}…{ZETTA_STREAM_LOG_ADDRESS.slice(-6)}
               </a>
-              {count !== undefined && <> · entries: {String(count)}</>}
+              <span className="ml-3">rotations: {String(count)}</span>
             </>
           ) : (
-            <>Set NEXT_PUBLIC_ZETTA_STREAM_LOG_ADDRESS after `pnpm contracts:deploy`.</>
+            <>Set NEXT_PUBLIC_ZETTA_STREAM_LOG_ADDRESS in .env</>
           )}
         </div>
       </div>
 
-      <section className="card p-4">
-        <h2 className="text-lg font-semibold mb-3">Recent verdicts</h2>
-        {!addrReady && (
-          <div className="text-sm text-[rgb(var(--muted))]">
-            Deploy the contract and set the address to see live data.
+      <section className="card p-0 overflow-hidden">
+        {rotations.length === 0 ? (
+          <div className="p-8 text-center text-sm text-[rgb(var(--muted))]">
+            No rotations on-chain yet. Run{" "}
+            <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-white/[0.05]">pnpm seed:rotations</code>{" "}
+            or trigger one via the <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-white/[0.05]">zetta-stream-action</code> skill.
           </div>
-        )}
-        {addrReady && (
+        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead className="text-[rgb(var(--muted))] text-left">
+              <thead className="text-[rgb(var(--muted))] text-left bg-white/[0.02]">
                 <tr>
-                  <th className="py-2 pr-4">when</th>
-                  <th className="pr-4">owner</th>
-                  <th className="pr-4">verdict</th>
-                  <th className="pr-4">conf</th>
-                  <th className="pr-4">gasSaved</th>
-                  <th className="pr-4">reason</th>
-                  <th className="pr-4">txs</th>
+                  <th className="py-3 px-4 font-mono uppercase">when</th>
+                  <th className="px-4 font-mono uppercase">route</th>
+                  <th className="px-4 font-mono uppercase">net</th>
+                  <th className="px-4 font-mono uppercase">conf</th>
+                  <th className="px-4 font-mono uppercase">mode</th>
+                  <th className="px-4 font-mono uppercase">reason</th>
+                  <th className="px-4 font-mono uppercase">batch</th>
                 </tr>
               </thead>
               <tbody>
-                {(entries as Entry[] | undefined)?.map((e, i) => (
-                  <tr key={i} className="border-t border-[rgb(var(--card-border))]">
-                    <td className="py-2 pr-4 text-[rgb(var(--muted))]">
-                      {new Date(Number(e.timestamp) * 1000).toLocaleString()}
-                    </td>
-                    <td className="pr-4 mono">{e.owner.slice(0, 8)}…</td>
-                    <td className="pr-4">
-                      <span className={`px-2 py-0.5 rounded tag-${VERDICT_LABELS[e.verdict].toLowerCase()}`}>
-                        {VERDICT_LABELS[e.verdict]}
-                      </span>
-                    </td>
-                    <td className="pr-4">{e.confidence}</td>
-                    <td className="pr-4">{e.gasSaved ? `${(e.gasSaved / 1000).toFixed(1)}%` : "-"}</td>
-                    <td className="pr-4 max-w-xs truncate">{e.reason}</td>
-                    <td className="pr-4 mono">
-                      {e.txHashes.map((h, j) => (
-                        <a
-                          key={j}
-                          className="underline mr-2"
-                          href={OKLINK_TX(h)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {h.slice(0, 8)}…
-                        </a>
-                      ))}
-                    </td>
-                  </tr>
-                ))}
-                {(entries as Entry[] | undefined)?.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="py-6 text-center text-[rgb(var(--muted))]">
-                      No entries yet. Fire an intent from{" "}
-                      <a href="/firewall" className="underline text-[rgb(var(--accent))]">
-                        /firewall
-                      </a>
-                      .
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="card p-4">
-        <h2 className="text-lg font-semibold mb-3">Recent EIP-7702 delegations</h2>
-        {addrReady && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-[rgb(var(--muted))] text-left">
-                <tr>
-                  <th className="py-2 pr-4">when</th>
-                  <th className="pr-4">eoa</th>
-                  <th className="pr-4">delegate</th>
-                  <th className="pr-4">mode</th>
-                  <th className="pr-4">authTx</th>
-                  <th className="pr-4">revoked</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(delegations as Delegation[] | undefined)?.map((d, i) => (
-                  <tr key={i} className="border-t border-[rgb(var(--card-border))]">
-                    <td className="py-2 pr-4 text-[rgb(var(--muted))]">
-                      {new Date(Number(d.timestamp) * 1000).toLocaleString()}
-                    </td>
-                    <td className="pr-4 mono">{d.eoa.slice(0, 8)}…</td>
-                    <td className="pr-4 mono">{d.delegate.slice(0, 8)}…</td>
-                    <td className="pr-4">
-                      <span
-                        className={`px-2 py-0.5 rounded ${
-                          d.mode === 0 ? "tag-approved" : "tag-warn"
-                        }`}
-                      >
-                        {DELEGATION_MODE_LABELS[d.mode]}
-                      </span>
-                    </td>
-                    <td className="pr-4 mono">
-                      <a
-                        className="underline"
-                        href={OKLINK_TX(d.authTxHash)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {d.authTxHash.slice(0, 8)}…
-                      </a>
-                    </td>
-                    <td className="pr-4">{d.revoked ? "yes" : "no"}</td>
-                  </tr>
-                ))}
-                {(delegations as Delegation[] | undefined)?.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="py-6 text-center text-[rgb(var(--muted))]">
-                      No delegations yet.
-                    </td>
-                  </tr>
-                )}
+                {rotations.map((r, i) => {
+                  const positive = r.netYieldBps >= 0;
+                  return (
+                    <tr key={i} className="border-t border-[rgb(var(--card-border))] hover:bg-white/[0.02]">
+                      <td className="py-3 px-4 text-[rgb(var(--muted))] whitespace-nowrap">
+                        {new Date(Number(r.timestamp) * 1000).toLocaleString()}
+                      </td>
+                      <td className="px-4 font-mono whitespace-nowrap">
+                        <span className="text-[rgb(var(--muted))]">{POSITION_LABELS[r.from]}</span>
+                        <span className="mx-1.5">→</span>
+                        <span className="text-[rgb(var(--accent))]">{POSITION_LABELS[r.to]}</span>
+                      </td>
+                      <td className={`px-4 font-mono font-semibold ${positive ? "text-[rgb(var(--accent))]" : "text-[rgb(var(--muted))]"}`}>
+                        {positive ? "+" : ""}{r.netYieldBps} bps
+                      </td>
+                      <td className="px-4 font-mono">{r.confidence}</td>
+                      <td className="px-4">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono ${r.mode === 0 ? "tag-approved" : "tag-warn"}`}>
+                          {DELEGATION_MODE_LABELS[r.mode]}
+                        </span>
+                      </td>
+                      <td className="px-4 max-w-xs truncate">{r.reason}</td>
+                      <td className="px-4 font-mono">
+                        {r.batchTxHash !== "0x0000000000000000000000000000000000000000000000000000000000000000" ? (
+                          <a
+                            className="underline text-[rgb(var(--accent))]"
+                            href={OKLINK_TX(r.batchTxHash)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {r.batchTxHash.slice(0, 8)}…
+                          </a>
+                        ) : (
+                          <span className="text-[rgb(var(--muted))]">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -186,25 +146,3 @@ export default function AuditPage() {
     </div>
   );
 }
-
-type Entry = {
-  timestamp: bigint;
-  owner: `0x${string}`;
-  agent: `0x${string}`;
-  intentHash: `0x${string}`;
-  verdict: 0 | 1 | 2 | 3;
-  confidence: number;
-  gasSaved: number;
-  txHashes: `0x${string}`[];
-  reason: string;
-};
-
-type Delegation = {
-  timestamp: bigint;
-  eoa: `0x${string}`;
-  delegate: `0x${string}`;
-  chainId: bigint;
-  authTxHash: `0x${string}`;
-  mode: 0 | 1;
-  revoked: boolean;
-};

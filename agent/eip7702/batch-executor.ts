@@ -36,8 +36,8 @@ export interface ExecuteResult {
 
 export async function executeBatch(input: ExecuteInput): Promise<ExecuteResult> {
   const cfg = getConfig();
-  const delegate = cfg.BATCH_CALL_DELEGATE_ADDRESS as `0x${string}`;
-  if (!delegate) throw new Error("BATCH_CALL_DELEGATE_ADDRESS not set");
+  const delegate = cfg.ZETTA_STREAM_DELEGATE_ADDRESS as `0x${string}`;
+  if (!delegate) throw new Error("ZETTA_STREAM_DELEGATE_ADDRESS not set");
 
   const probed = input.forceFallback ? { supports7702: false, reason: "forced" } : await probe();
 
