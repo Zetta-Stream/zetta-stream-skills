@@ -1,0 +1,16 @@
+node_modules
+.next
+.env
+.env.local
+.agent-state.json
+logs/
+out/
+cache/
+broadcast/
+.DS_Store
+tsconfig.tsbuildinfo
+next-env.d.ts
+contracts/out
+contracts/cache
+contracts/lib
+contracts/broadcast

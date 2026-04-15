@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+:root {
+  --background: 10 10 15;
+  --foreground: 240 240 245;
+  --card: 18 18 24;
+  --card-border: 40 40 52;
+  --accent: 120 220 180;
+  --accent-warn: 240 200 100;
+  --accent-reject: 240 90 90;
+  --accent-exec: 120 180 250;
+  --muted: 120 120 140;
+}
+
+html,
+body {
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.card {
+  background: rgb(var(--card));
+  border: 1px solid rgb(var(--card-border));
+  border-radius: 10px;
+}
+
+.tag-approved { background: rgba(120, 220, 180, 0.15); color: rgb(120, 220, 180); }
+.tag-rejected { background: rgba(240, 90, 90, 0.15); color: rgb(240, 90, 90); }
+.tag-warn     { background: rgba(240, 200, 100, 0.15); color: rgb(240, 200, 100); }
+.tag-executed { background: rgba(120, 180, 250, 0.15); color: rgb(120, 180, 250); }
+.tag-pending  { background: rgba(120, 120, 140, 0.15); color: rgb(180, 180, 200); }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.event-line {
+  border-left: 2px solid rgb(var(--card-border));
+  padding-left: 12px;
+}
+
+.event-line.poll { border-color: rgba(120, 180, 250, 0.5); }
+.event-line.fire { border-color: rgba(240, 200, 100, 0.8); }
+.event-line.verdict { border-color: rgba(120, 220, 180, 0.8); }
+.event-line.error { border-color: rgba(240, 90, 90, 0.8); }
